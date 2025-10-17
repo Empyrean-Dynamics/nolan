@@ -21,9 +21,9 @@ pub fn hess_index(i: usize, j: usize) -> Option<usize> {
 pub struct Jet<const ORDER: usize, const N: usize> {
     /// Function value f.
     pub value: f64,
-    /// First derivatives `∂f/∂p_i`.
+    /// First derivatives (\\(\partial f / \partial p_i \\)).
     pub grad: [f64; N],
-    /// Second derivatives `∂²f/(∂p_i ∂p_j)` in lower triangular storage.
+    /// Second derivatives (\\(\partial f / \partial p_i \partial p_j \\)).
     pub hess: [f64; MAX_HESS_STORAGE],
 }
 
