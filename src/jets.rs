@@ -49,3 +49,24 @@ pub type Jet1<const N: usize> = Jet<1, N>;
 pub type Jet2<const N: usize> = Jet<2, N>;
 pub type Dual = Jet1<1>;
 pub type HyperDual = Jet2<2>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hess_index() {
+        assert_eq!(hess_index(0, 0).unwrap(), 0);
+        assert_eq!(hess_index(1, 0).unwrap(), 1);
+        assert_eq!(hess_index(1, 1).unwrap(), 2);
+        assert_eq!(hess_index(2, 0).unwrap(), 3);
+        assert_eq!(hess_index(2, 1).unwrap(), 4);
+        assert_eq!(hess_index(2, 2).unwrap(), 5);
+
+        for i in 0..5 {
+            for j in 0..5 {
+                assert_eq!(hess_index(i, j), hess_index(j, i))
+            }
+        }
+    }
+}
