@@ -17,6 +17,12 @@ pub fn hess_index(i: usize, j: usize) -> Option<usize> {
     }
 }
 
+/// Calculate the size of the flattened hessian matrix given
+/// n parameters.
+pub fn hess_size(n: usize) -> usize {
+    n * (n + 1) / 2
+}
+
 #[derive(Clone, Copy)]
 pub struct Jet<const ORDER: usize, const N: usize> {
     /// Function value f.
@@ -68,5 +74,13 @@ mod tests {
                 assert_eq!(hess_index(i, j), hess_index(j, i))
             }
         }
+    }
+
+    #[test]
+    fn test_hess_size() {
+        assert_eq!(hess_size(1), 1);
+        assert_eq!(hess_size(2), 3);
+        assert_eq!(hess_size(3), 6);
+        assert_eq!(hess_size(4), 10);
     }
 }
