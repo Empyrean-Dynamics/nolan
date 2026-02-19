@@ -1,6 +1,6 @@
 use std::ops::{Add, Div, Mul, Sub};
 
-use crate::jets::{HyperDual, Jet, MAX_HESS_STORAGE, hess_size};
+use crate::jets::{HyperDual, Jet, MAX_HESS_STORAGE, hess_index, hess_size};
 
 impl<const O: usize, const N: usize> Add for Jet<O, N> {
     type Output = Self;
@@ -18,7 +18,11 @@ impl<const O: usize, const N: usize> Add for Jet<O, N> {
             }
         }
 
-        // TODO: Implement Hessian addition
+        if O >= 2 {
+            for i in 0..hess_size(N) {
+                result.hess[i] = self.hess[i] + rhs.hess[i]
+            }
+        }
         result
     }
 }
@@ -39,7 +43,11 @@ impl<const O: usize, const N: usize> Sub for Jet<O, N> {
             }
         }
 
-        // TODO: Implement Hessian subtraction
+        if O >= 2 {
+            for i in 0..hess_size(N) {
+                result.hess[i] = self.hess[i] - rhs.hess[i]
+            }
+        }
         result
     }
 }
@@ -60,7 +68,17 @@ impl<const O: usize, const N: usize> Mul for Jet<O, N> {
             }
         }
 
-        // TODO: Implement Hessian multiplication
+        if O >= 2 {
+            for i in 0..N {
+                for j in 0..=i {
+                    let idx = hess_index(i, j).unwrap();
+                    result.hess[idx] = self.value * rhs.hess[idx]
+                        + rhs.value * self.hess[idx]
+                        + self.grad[i] * rhs.grad[j]
+                        + self.grad[j] * rhs.grad[i];
+                }
+            }
+        }
         result
     }
 }
@@ -77,12 +95,22 @@ impl<const O: usize, const N: usize> Div for Jet<O, N> {
 
         if O >= 1 {
             for i in 0..N {
-                result.grad[i] = ((rhs.value * self.grad[i]) - (self.value * rhs.grad[i]))
-                    / (rhs.value * rhs.value);
+                result.grad[i] = (self.grad[i] - result.value * rhs.grad[i]) / rhs.value;
             }
         }
 
-        // TODO: Implement Hessian division
+        if O >= 2 {
+            for i in 0..N {
+                for j in 0..=i {
+                    let idx = hess_index(i, j).unwrap();
+                    result.hess[idx] = (self.hess[idx]
+                        - result.value * rhs.hess[idx]
+                        - result.grad[i] * rhs.grad[j]
+                        - result.grad[j] * rhs.grad[i])
+                        / rhs.value;
+                }
+            }
+        }
         result
     }
 }
