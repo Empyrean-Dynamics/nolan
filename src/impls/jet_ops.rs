@@ -1,6 +1,6 @@
-use std::ops::{Add, Div, Mul, Sub};
+use std::ops::{Add, Div, Mul, Neg, Sub};
 
-use crate::jets::{HyperDual, Jet, MAX_HESS_STORAGE, hess_index, hess_size};
+use crate::jets::{Jet, MAX_HESS_STORAGE, hess_index, hess_size};
 
 impl<const O: usize, const N: usize> Add for Jet<O, N> {
     type Output = Self;
@@ -111,6 +111,32 @@ impl<const O: usize, const N: usize> Div for Jet<O, N> {
                 }
             }
         }
+        result
+    }
+}
+
+impl<const O: usize, const N: usize> Neg for Jet<O, N> {
+    type Output = Self;
+
+    fn neg(self) -> Self {
+        let mut result = Jet {
+            value: -self.value,
+            grad: [0.0; N],
+            hess: [0.0; MAX_HESS_STORAGE],
+        };
+
+        if O >= 1 {
+            for i in 0..N {
+                result.grad[i] = -self.grad[i];
+            }
+        }
+
+        if O >= 2 {
+            for i in 0..hess_size(N) {
+                result.hess[i] = -self.hess[i];
+            }
+        }
+
         result
     }
 }
