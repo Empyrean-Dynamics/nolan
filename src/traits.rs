@@ -7,28 +7,28 @@ pub trait Differentiable:
     + Mul<Output = Self>
     + Div<Output = Self>
     + Neg<Output = Self>
+    + Add<f64, Output = Self>
+    + Sub<f64, Output = Self>
+    + Mul<f64, Output = Self>
+    + Div<f64, Output = Self>
 {
     /// Function value.
     fn value(&self) -> f64;
     /// Initialize a constant differentiable (derivatives are all zero).
     fn constant(value: f64) -> Self;
-    /// Maximum derivative order supported.
-    fn order(&self) -> usize;
-    /// Number of tracked parameters.
-    fn n_params(&self) -> usize;
 }
 
 pub trait FirstOrder: Differentiable {
-    /// `∂/∂p_i`: derivative with respect to parameter `p_i` (parameter stored at index i).
+    /// \\( \frac{\partial f}{\partial p_i} \\): derivative with respect to parameter \\( p_i \\) (parameter stored at index i).
     fn grad(&self, i: usize) -> f64;
-    /// `∂/∂p_i`: Mutable derivative with respect to parameter `p_i` (parameter stored at index i).
+    /// \\( \frac{\partial f}{\partial p_i} \\): Mutable derivative with respect to parameter \\( p_i \\) (parameter stored at index i).
     fn grad_mut(&mut self, i: usize) -> &mut f64;
 }
 
 pub trait SecondOrder: FirstOrder {
-    /// `∂²/(∂p_i ∂p_j)`: Second derivative with respect to parameters `p_i` and `p_j` (parameters stored at indices i & j).
+    /// \\( \frac{\partial^2 f}{\partial p_i \partial p_j} \\): Second derivative with respect to parameters \\( p_i \\) and \\( p_j \\) (parameters stored at indices i & j).
     fn hess(&self, i: usize, j: usize) -> f64;
-    /// `∂²/(∂p_i ∂p_j)`: Mutable second derivative with respect to parameters `p_i` and `p_j` (parameters stored at indices i & j).
+    /// \\( \frac{\partial^2 f}{\partial p_i \partial p_j} \\): Mutable second derivative with respect to parameters \\( p_i \\) and \\( p_j \\) (parameters stored at indices i & j).
     fn hess_mut(&mut self, i: usize, j: usize) -> &mut f64;
 }
 
@@ -49,19 +49,17 @@ pub trait DifferentiableMath: Differentiable {
     fn sinh(self) -> Self;
     fn cosh(self) -> Self;
     fn tanh(self) -> Self;
-    fn asinh(self) -> Self;
-    fn acosh(self) -> Self;
-    fn atanh(self) -> Self;
 
     // Exponential and logarithmic functions
     fn exp(self) -> Self;
-    fn log(self, base: Self) -> Self;
-    fn log2(self) -> Self;
+    fn log(self, base: f64) -> Self;
     fn log10(self) -> Self;
     fn ln(self) -> Self;
 
     // Power functions
     fn sqrt(self) -> Self;
-    fn powf(self, n: Self) -> Self;
+    fn powf(self, n: f64) -> Self;
     fn powi(self, n: i32) -> Self;
 }
+
+pub trait AutoDiff: Differentiable + DifferentiableMath + Copy {}
