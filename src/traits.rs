@@ -60,6 +60,9 @@ pub trait DifferentiableMath: Differentiable {
     fn sqrt(self) -> Self;
     fn powf(self, n: f64) -> Self;
     fn powi(self, n: i32) -> Self;
+
+    // Absolute value
+    fn abs(self) -> Self;
 }
 
 pub trait AutoDiff: Differentiable + DifferentiableMath + Copy {}

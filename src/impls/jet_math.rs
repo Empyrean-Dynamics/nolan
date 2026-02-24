@@ -166,4 +166,18 @@ impl<const O: usize, const N: usize> Jet<O, N> {
             n * (n - 1.0) * self.value.powf(n - 2.0),
         )
     }
+
+    pub fn abs(self) -> Self {
+        let sign = if self.value > 0.0 {
+            1.0
+        } else if self.value < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
+        // |f(x)|' = sign(f) * f'(x), |f(x)|'' = sign(f) * f''(x)
+        // (second derivative of abs is 0 w.r.t. x, but the chain rule
+        // through the unary helper correctly propagates sign * hessian)
+        unary(&self, self.value.abs(), sign, 0.0)
+    }
 }
