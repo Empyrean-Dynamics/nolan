@@ -96,6 +96,9 @@ impl<const O: usize, const N: usize> DifferentiableMath for Jet<O, N> {
     fn powi(self, n: i32) -> Self {
         self.powi(n)
     }
+    fn abs(self) -> Self {
+        self.abs()
+    }
 }
 
 impl<const O: usize, const N: usize> AutoDiff for Jet<O, N> {}

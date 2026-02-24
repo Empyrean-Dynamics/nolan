@@ -1,3 +1,4 @@
+# KaTeX math rendering in rustdoc. Always build with --no-deps to avoid
+# applying this flag to third-party crates that lack docs/katex-header.html.
 [build]
 rustdocflags = ["--html-in-header", "docs/katex-header.html"]
-
