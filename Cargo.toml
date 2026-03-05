@@ -15,3 +15,7 @@ rustdoc-args = ["--html-in-header", "docs/katex-header.html"]
 [dev-dependencies]
 rusty-hook = "^0.11.2"
 criterion = { version = "0.4", features = ["html_reports"] }
+
+[[bench]]
+name = "benchmark_jets"
+harness = false

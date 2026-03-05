@@ -1,5 +1,3 @@
-pub const MAX_HESS_STORAGE: usize = 256;
-
 /// Get the linear index of a Hessian matrix stored in lower triangular form.
 pub fn hess_index(i: usize, j: usize) -> Option<usize> {
     // Lower triangular form
@@ -19,31 +17,48 @@ pub fn hess_index(i: usize, j: usize) -> Option<usize> {
 
 /// Calculate the size of the flattened hessian matrix given
 /// n parameters.
-pub fn hess_size(n: usize) -> usize {
+pub const fn hess_size(n: usize) -> usize {
     n * (n + 1) / 2
 }
 
+/// First-order jet: value + gradient. No hessian storage.
+///
+/// For \\( N = 6 \\): 56 bytes (1 `f64` value + 6 `f64` gradient).
 #[derive(Clone, Copy)]
-pub struct Jet<const ORDER: usize, const N: usize> {
-    /// Function value f.
+pub struct Jet1<const N: usize> {
+    /// Function value \\( f \\).
     pub value: f64,
-    /// First derivatives (\\(\partial f / \partial p_i \\)).
+    /// First derivatives \\( \partial f / \partial p_i \\).
     pub grad: [f64; N],
-    /// Second derivatives (\\(\partial f / \partial p_i \partial p_j \\)).
-    pub hess: [f64; MAX_HESS_STORAGE],
 }
 
-impl<const O: usize, const N: usize> Jet<O, N> {
-    /// Constant (all derivatives zero). Available for any ORDER.
+/// Second-order jet: value + gradient + hessian.
+///
+/// `H` must equal [`hess_size(N)`] = \\( N (N+1) / 2 \\).
+/// Use `Jet2::<N, { hess_size(N) }>::variable(...)` for correctly-sized instances.
+///
+/// For \\( N = 6, H = 21 \\): 224 bytes (1 + 6 + 21 `f64`s).
+#[derive(Clone, Copy)]
+pub struct Jet2<const N: usize, const H: usize> {
+    /// Function value \\( f \\).
+    pub value: f64,
+    /// First derivatives \\( \partial f / \partial p_i \\).
+    pub grad: [f64; N],
+    /// Second derivatives \\( \partial^2 f / \partial p_i \partial p_j \\),
+    /// stored in lower-triangular form.
+    pub hess: [f64; H],
+}
+
+impl<const N: usize> Jet1<N> {
+    /// Constant (all derivatives zero).
     pub fn constant(value: f64) -> Self {
         Self {
             value,
             grad: [0.0; N],
-            hess: [0.0; MAX_HESS_STORAGE],
         }
     }
 
-    /// Variable seeded at `param_idx` (unit gradient there). Requires O ≥ 1.
+    /// Variable seeded at `param_idx` (unit gradient there).
     pub fn variable(value: f64, param_idx: usize) -> Self {
         let mut jet = Self::constant(value);
         jet.grad[param_idx] = 1.0;
@@ -51,10 +66,26 @@ impl<const O: usize, const N: usize> Jet<O, N> {
     }
 }
 
-pub type Jet1<const N: usize> = Jet<1, N>;
-pub type Jet2<const N: usize> = Jet<2, N>;
+impl<const N: usize, const H: usize> Jet2<N, H> {
+    /// Constant (all derivatives zero).
+    pub fn constant(value: f64) -> Self {
+        Self {
+            value,
+            grad: [0.0; N],
+            hess: [0.0; H],
+        }
+    }
+
+    /// Variable seeded at `param_idx` (unit gradient there).
+    pub fn variable(value: f64, param_idx: usize) -> Self {
+        let mut jet = Self::constant(value);
+        jet.grad[param_idx] = 1.0;
+        jet
+    }
+}
+
 pub type Dual = Jet1<1>;
-pub type HyperDual = Jet2<2>;
+pub type HyperDual = Jet2<2, { hess_size(2) }>;
 
 #[cfg(test)]
 mod tests {
