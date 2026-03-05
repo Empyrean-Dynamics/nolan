@@ -1,4 +1,4 @@
-name: Rust - Build Lint Test and Benchmark
+name: Rust CI
 
 on:
   push:
@@ -10,17 +10,81 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-lint-test-benchmark:
+  # ── Build & Lint ────────────────────────────────────────────────
+  build-lint:
+    name: Build & Lint
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Lint
-      run: |
-        cargo clippy --verbose
-        cargo fmt -- --check
-    - name: Test
-      run: cargo test --verbose
-    - name: Benchmark
-      run: cargo bench --verbose
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy
+          rustflags: ""
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Lint
+        run: |
+          cargo fmt -- --check
+          cargo clippy --all-targets --all-features
+
+  # ── Test ────────────────────────────────────────────────────────
+  test:
+    name: Test
+    needs: build-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+
+      - name: Unit tests
+        run: cargo test --verbose
+
+  # ── Benchmark: Criterion with baseline comparison ───────────────
+  benchmark:
+    name: Benchmark
+    needs: build-lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      deployments: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+
+      - name: Run benchmarks
+        run: cargo bench --bench 'benchmark_*' -- --output-format bencher 2>&1 | tee benchmark-output.txt
+        env:
+          CARGO_TERM_COLOR: never
+
+      # Requires a gh-pages branch to exist for baseline storage.
+      # One-time setup: git checkout --orphan gh-pages && git reset --hard && git commit --allow-empty -m "init" && git push origin gh-pages
+      - name: Compare benchmarks
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Nolan Benchmarks
+          tool: 'cargo'
+          output-file-path: benchmark-output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # On main: push baseline to gh-pages branch
+          auto-push: ${{ github.ref == 'refs/heads/main' }}
+          # On PRs: post comparison comment
+          comment-on-alert: true
+          summary-always: true
+          comment-always: true
+          # Only flag extreme regressions (>200%) in comments
+          alert-threshold: '200%'
+          # Do not fail the build on regressions
+          fail-on-alert: false
