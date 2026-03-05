@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use nolan::jets::Jet;
+    use nolan::jets::{Jet2, hess_size};
     use nolan::traits::AutoDiff;
 
     #[test]
@@ -10,7 +10,7 @@ mod tests {
             x.sin()
         }
 
-        let x = Jet::<2, 1>::variable(0.0, 0);
+        let x = Jet2::<1, { hess_size(1) }>::variable(0.0, 0);
         let result = f(x);
 
         // f(x) = f(0) = sin(0) = 0
@@ -34,7 +34,7 @@ mod tests {
             x.cos()
         }
 
-        let x = Jet::<2, 1>::variable(0.0, 0);
+        let x = Jet2::<1, { hess_size(1) }>::variable(0.0, 0);
         let result = f(x);
 
         // f(x) = f(0) = cos(0) = 1
@@ -58,8 +58,8 @@ mod tests {
             x.sin() + y.cos()
         }
 
-        let x = Jet::<2, 2>::variable(0.0, 0);
-        let y = Jet::<2, 2>::variable(0.0, 1);
+        let x = Jet2::<2, { hess_size(2) }>::variable(0.0, 0);
+        let y = Jet2::<2, { hess_size(2) }>::variable(0.0, 1);
         let result = f(x, y);
 
         // f(x,y) = f(0, 0) = sin(0) + cos(0) = 0 + 1 = 1

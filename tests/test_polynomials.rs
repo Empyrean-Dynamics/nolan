@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use nolan::jets::Jet;
+    use nolan::jets::{Jet2, hess_size};
     use nolan::traits::AutoDiff;
 
     #[test]
@@ -10,7 +10,7 @@ mod tests {
             x.powf(3.0) * 8.0 + x.powf(2.0) * 4.0 - x * 2.0 + 10.0
         }
 
-        let x = Jet::<2, 1>::variable(1.0, 0);
+        let x = Jet2::<1, { hess_size(1) }>::variable(1.0, 0);
         let result = f(x);
 
         // f(x) = f(1) = 8 + 4 - 2 + 10 = 20
@@ -38,8 +38,8 @@ mod tests {
                 + 2.0
         }
 
-        let x = Jet::<2, 2>::variable(1.0, 0);
-        let y = Jet::<2, 2>::variable(2.0, 1);
+        let x = Jet2::<2, { hess_size(2) }>::variable(1.0, 0);
+        let y = Jet2::<2, { hess_size(2) }>::variable(2.0, 1);
         let result = f(x, y);
 
         // f(x,y) = f(1, 2) = 10 - 12 + 64 + 10 + 8 + 2 = 82
@@ -79,9 +79,9 @@ mod tests {
                 + 10.0
         }
 
-        let x = Jet::<2, 3>::variable(1.0, 0);
-        let y = Jet::<2, 3>::variable(2.0, 1);
-        let z = Jet::<2, 3>::variable(3.0, 2);
+        let x = Jet2::<3, { hess_size(3) }>::variable(1.0, 0);
+        let y = Jet2::<3, { hess_size(3) }>::variable(2.0, 1);
+        let z = Jet2::<3, { hess_size(3) }>::variable(3.0, 2);
         let result = f(x, y, z);
 
         // f(x,y,z) = f(1,2,3) = 108 + 20 + 40 + 135 + 4 + 18 + 12 + 10 = 347
