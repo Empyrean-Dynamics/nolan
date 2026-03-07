@@ -198,10 +198,10 @@ mod tests {
 
     #[test]
     fn test_f64_variable_returns_value() {
-        let x = <f64 as Differentiable>::variable(3.14, 0);
-        assert_eq!(x, 3.14);
-        let y = <f64 as Differentiable>::variable(2.71, 42);
-        assert_eq!(y, 2.71);
+        let x = <f64 as Differentiable>::variable(1.23, 0);
+        assert_eq!(x, 1.23);
+        let y = <f64 as Differentiable>::variable(4.56, 42);
+        assert_eq!(y, 4.56);
     }
 
     #[test]
