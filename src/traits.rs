@@ -16,6 +16,11 @@ pub trait Differentiable:
     fn value(&self) -> f64;
     /// Initialize a constant differentiable (derivatives are all zero).
     fn constant(value: f64) -> Self;
+    /// Initialize a variable with unit gradient at `param_idx`.
+    ///
+    /// For scalar types (f64), returns the value and ignores the index.
+    /// For Jet types, seeds the gradient vector with 1.0 at `param_idx`.
+    fn variable(value: f64, param_idx: usize) -> Self;
 }
 
 pub trait FirstOrder: Differentiable {
