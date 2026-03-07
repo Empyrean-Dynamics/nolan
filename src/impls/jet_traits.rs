@@ -11,6 +11,10 @@ impl<const N: usize> Differentiable for Jet1<N> {
     fn constant(value: f64) -> Self {
         Self::constant(value)
     }
+
+    fn variable(value: f64, param_idx: usize) -> Self {
+        Self::variable(value, param_idx)
+    }
 }
 
 impl<const N: usize, const H: usize> Differentiable for Jet2<N, H> {
@@ -20,6 +24,10 @@ impl<const N: usize, const H: usize> Differentiable for Jet2<N, H> {
 
     fn constant(value: f64) -> Self {
         Self::constant(value)
+    }
+
+    fn variable(value: f64, param_idx: usize) -> Self {
+        Self::variable(value, param_idx)
     }
 }
 
@@ -183,3 +191,44 @@ impl<const N: usize, const H: usize> DifferentiableMath for Jet2<N, H> {
 
 impl<const N: usize> AutoDiff for Jet1<N> {}
 impl<const N: usize, const H: usize> AutoDiff for Jet2<N, H> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_f64_variable_returns_value() {
+        let x = <f64 as Differentiable>::variable(3.14, 0);
+        assert_eq!(x, 3.14);
+        let y = <f64 as Differentiable>::variable(2.71, 42);
+        assert_eq!(y, 2.71);
+    }
+
+    #[test]
+    fn test_jet1_9_variable_seeds_gradient() {
+        let x = <Jet1<9> as Differentiable>::variable(1.5, 6);
+        assert_eq!(x.value(), 1.5);
+        // Gradient should be 1.0 at index 6, 0.0 elsewhere
+        for i in 0..9 {
+            let expected = if i == 6 { 1.0 } else { 0.0 };
+            assert_eq!(
+                x.grad(i),
+                expected,
+                "grad({i}) = {}, expected {expected}",
+                x.grad(i)
+            );
+        }
+    }
+
+    #[test]
+    fn test_jet1_6_variable_seeds_gradient() {
+        for idx in 0..6 {
+            let x = <Jet1<6> as Differentiable>::variable(2.0, idx);
+            assert_eq!(x.value(), 2.0);
+            for j in 0..6 {
+                let expected = if j == idx { 1.0 } else { 0.0 };
+                assert_eq!(x.grad(j), expected);
+            }
+        }
+    }
+}

@@ -7,6 +7,9 @@ impl Differentiable for f64 {
     fn constant(value: f64) -> Self {
         value
     }
+    fn variable(value: f64, _param_idx: usize) -> Self {
+        value
+    }
 }
 
 impl DifferentiableMath for f64 {
