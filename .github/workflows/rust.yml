@@ -10,6 +10,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ── Version Bump Check (PRs only) ────────────────────────────────
+  version-check:
+    name: Version Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check version was bumped
+        run: |
+          # Skip check if no releases have been tagged yet
+          if ! git describe --tags --match 'v*' origin/main 2>/dev/null; then
+            echo "No version tags found — skipping version check"
+            exit 0
+          fi
+
+          base_version=$(git show origin/main:Cargo.toml | grep '^version' | head -1 | sed 's/.*"\(.*\)"/\1/')
+          pr_version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "main: $base_version → PR: $pr_version"
+          if [ "$base_version" = "$pr_version" ]; then
+            echo "::error::Version in Cargo.toml has not been bumped. Run: cargo set-version --bump patch|minor|major"
+            exit 1
+          fi
+
   # ── Build & Lint ────────────────────────────────────────────────
   build-lint:
     name: Build & Lint
