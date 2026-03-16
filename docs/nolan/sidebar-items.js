@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["version"],"mod":["impls","jets","traits"]};

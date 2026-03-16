@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["hess_index","hess_size"],"struct":["Jet1","Jet2"],"type":["Dual","HyperDual"]};
