@@ -19,3 +19,7 @@ criterion = { version = "0.4", features = ["html_reports"] }
 [[bench]]
 name = "benchmark_jets"
 harness = false
+
+[[bench]]
+name = "benchmark_linalg"
+harness = false
