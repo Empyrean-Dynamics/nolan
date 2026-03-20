@@ -195,6 +195,7 @@ impl<const N: usize, const H: usize> AutoDiff for Jet2<N, H> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jets::hess_size;
 
     #[test]
     fn test_f64_variable_returns_value() {
@@ -230,5 +231,128 @@ mod tests {
                 assert_eq!(x.grad(j), expected);
             }
         }
+    }
+
+    // ─── extract_grad ──────────────────────────────────────────
+
+    #[test]
+    fn test_extract_grad_identity() {
+        // A variable seeded at index 2 should have unit gradient there.
+        let x = Jet1::<6>::variable(3.0, 2);
+        let g: [f64; 6] = x.extract_grad();
+        assert_eq!(g, [0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_extract_grad_constant() {
+        let c = Jet1::<6>::constant(5.0);
+        let g: [f64; 6] = c.extract_grad();
+        assert_eq!(g, [0.0; 6]);
+    }
+
+    #[test]
+    fn test_extract_grad_after_arithmetic() {
+        // f = x * y where x = var(2.0, 0), y = var(3.0, 1)
+        // df/dx = y.value = 3.0, df/dy = x.value = 2.0
+        let x = Jet1::<2>::variable(2.0, 0);
+        let y = Jet1::<2>::variable(3.0, 1);
+        let f = x * y;
+        let g: [f64; 2] = f.extract_grad();
+        assert_eq!(g[0], 3.0); // df/dx = y
+        assert_eq!(g[1], 2.0); // df/dy = x
+    }
+
+    #[test]
+    fn test_extract_grad_chain_rule() {
+        // f = sin(x) where x = var(0.5, 0)
+        // df/dx = cos(0.5)
+        let x = Jet1::<1>::variable(0.5, 0);
+        let f = x.sin();
+        let g: [f64; 1] = f.extract_grad();
+        assert!((g[0] - 0.5_f64.cos()).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_extract_grad_jet2() {
+        // extract_grad should also work on Jet2 (via FirstOrder)
+        let x = Jet2::<3, { hess_size(3) }>::variable(1.0, 1);
+        let g: [f64; 3] = x.extract_grad();
+        assert_eq!(g, [0.0, 1.0, 0.0]);
+    }
+
+    // ─── extract_hess ──────────────────────────────────────────
+
+    #[test]
+    fn test_extract_hess_constant() {
+        let c = Jet2::<3, { hess_size(3) }>::constant(5.0);
+        let h: [[f64; 3]; 3] = c.extract_hess();
+        assert_eq!(h, [[0.0; 3]; 3]);
+    }
+
+    #[test]
+    fn test_extract_hess_variable() {
+        // A single variable has zero Hessian (it's linear).
+        let x = Jet2::<3, { hess_size(3) }>::variable(2.0, 0);
+        let h: [[f64; 3]; 3] = x.extract_hess();
+        assert_eq!(h, [[0.0; 3]; 3]);
+    }
+
+    #[test]
+    fn test_extract_hess_product() {
+        // f = x * y where x = var(2.0, 0), y = var(3.0, 1)
+        // d²f/dx² = 0, d²f/dy² = 0, d²f/dxdy = 1.0
+        let x = Jet2::<2, { hess_size(2) }>::variable(2.0, 0);
+        let y = Jet2::<2, { hess_size(2) }>::variable(3.0, 1);
+        let f = x * y;
+        let h: [[f64; 2]; 2] = f.extract_hess();
+        assert_eq!(h[0][0], 0.0); // d²f/dx²
+        assert_eq!(h[1][1], 0.0); // d²f/dy²
+        assert_eq!(h[0][1], 1.0); // d²f/dxdy
+        assert_eq!(h[1][0], 1.0); // symmetry
+    }
+
+    #[test]
+    fn test_extract_hess_square() {
+        // f = x^2 where x = var(3.0, 0)
+        // d²f/dx² = 2.0
+        let x = Jet2::<1, { hess_size(1) }>::variable(3.0, 0);
+        let f = x * x;
+        let h: [[f64; 1]; 1] = f.extract_hess();
+        assert_eq!(h[0][0], 2.0);
+    }
+
+    #[test]
+    fn test_extract_hess_symmetry() {
+        // f = x * y * z — mixed partials should be symmetric
+        let x = Jet2::<3, { hess_size(3) }>::variable(1.0, 0);
+        let y = Jet2::<3, { hess_size(3) }>::variable(2.0, 1);
+        let z = Jet2::<3, { hess_size(3) }>::variable(3.0, 2);
+        let f = x * y * z;
+        let h: [[f64; 3]; 3] = f.extract_hess();
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(
+                    h[i][j], h[j][i],
+                    "Hessian not symmetric at [{i}][{j}]: {} != {}",
+                    h[i][j], h[j][i]
+                );
+            }
+        }
+        // d²f/dxdy = z.value = 3.0
+        assert_eq!(h[0][1], 3.0);
+        // d²f/dxdz = y.value = 2.0
+        assert_eq!(h[0][2], 2.0);
+        // d²f/dydz = x.value = 1.0
+        assert_eq!(h[1][2], 1.0);
+    }
+
+    #[test]
+    fn test_extract_hess_sin() {
+        // f = sin(x) where x = var(1.0, 0)
+        // d²f/dx² = -sin(1.0)
+        let x = Jet2::<1, { hess_size(1) }>::variable(1.0, 0);
+        let f = x.sin();
+        let h: [[f64; 1]; 1] = f.extract_hess();
+        assert!((h[0][0] - (-1.0_f64.sin())).abs() < 1e-15);
     }
 }

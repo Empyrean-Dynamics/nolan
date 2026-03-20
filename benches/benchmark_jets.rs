@@ -1,5 +1,6 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nolan::jets::{Jet1, Jet2, hess_size};
+use nolan::traits::{FirstOrder, SecondOrder};
 
 fn bench_jet1_constant(c: &mut Criterion) {
     c.bench_function("jet1_6_constant", |b| {
@@ -133,6 +134,64 @@ fn bench_jet1_gravity_pattern(c: &mut Criterion) {
     });
 }
 
+// ─── extract_grad benchmarks ──────────────────────────────────
+
+fn bench_jet1_extract_grad_6(c: &mut Criterion) {
+    // Build a Jet1<6> with non-trivial gradients (gravity pattern output)
+    let x = Jet1::<6>::variable(1.0, 0);
+    let y = Jet1::<6>::variable(0.5, 1);
+    let z = Jet1::<6>::variable(0.1, 2);
+    let r2 = x * x + y * y + z * z;
+    let r = r2.sqrt();
+    let f = r.powi(-3) * x;
+
+    c.bench_function("jet1_6_extract_grad", |bench| {
+        bench.iter(|| black_box(black_box(f).extract_grad::<6>()))
+    });
+}
+
+fn bench_jet1_extract_grad_9(c: &mut Criterion) {
+    let x = Jet1::<9>::variable(1.0, 0);
+    let y = Jet1::<9>::variable(0.5, 1);
+    let z = Jet1::<9>::variable(0.1, 2);
+    let r2 = x * x + y * y + z * z;
+    let r = r2.sqrt();
+    let f = r.powi(-3) * x;
+
+    c.bench_function("jet1_9_extract_grad", |bench| {
+        bench.iter(|| black_box(black_box(f).extract_grad::<9>()))
+    });
+}
+
+// ─── extract_hess benchmarks ──────────────────────────────────
+
+fn bench_jet2_extract_hess_6(c: &mut Criterion) {
+    // Build a Jet2<6,21> with non-trivial Hessian (gravity pattern)
+    let x = Jet2::<6, { hess_size(6) }>::variable(1.0, 0);
+    let y = Jet2::<6, { hess_size(6) }>::variable(0.5, 1);
+    let z = Jet2::<6, { hess_size(6) }>::variable(0.1, 2);
+    let r2 = x * x + y * y + z * z;
+    let r = r2.sqrt();
+    let f = r.powi(-3) * x;
+
+    c.bench_function("jet2_6_extract_hess", |bench| {
+        bench.iter(|| black_box(black_box(f).extract_hess::<6>()))
+    });
+}
+
+fn bench_jet2_extract_hess_9(c: &mut Criterion) {
+    let x = Jet2::<9, { hess_size(9) }>::variable(1.0, 0);
+    let y = Jet2::<9, { hess_size(9) }>::variable(0.5, 1);
+    let z = Jet2::<9, { hess_size(9) }>::variable(0.1, 2);
+    let r2 = x * x + y * y + z * z;
+    let r = r2.sqrt();
+    let f = r.powi(-3) * x;
+
+    c.bench_function("jet2_9_extract_hess", |bench| {
+        bench.iter(|| black_box(black_box(f).extract_hess::<9>()))
+    });
+}
+
 criterion_group!(
     benches,
     bench_jet1_constant,
@@ -151,5 +210,9 @@ criterion_group!(
     bench_jet2_mul,
     bench_jet2_sin,
     bench_jet1_gravity_pattern,
+    bench_jet1_extract_grad_6,
+    bench_jet1_extract_grad_9,
+    bench_jet2_extract_hess_6,
+    bench_jet2_extract_hess_9,
 );
 criterion_main!(benches);

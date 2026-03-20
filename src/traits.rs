@@ -1,7 +1,8 @@
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 pub trait Differentiable:
-    Clone
+    Copy
+    + Clone
     + Add<Output = Self>
     + Sub<Output = Self>
     + Mul<Output = Self>
@@ -28,6 +29,13 @@ pub trait FirstOrder: Differentiable {
     fn grad(&self, i: usize) -> f64;
     /// \\( \frac{\partial f}{\partial p_i} \\): Mutable derivative with respect to parameter \\( p_i \\) (parameter stored at index i).
     fn grad_mut(&mut self, i: usize) -> &mut f64;
+
+    /// Extract the full gradient as an \\( M \\)-element array.
+    ///
+    /// Returns \\( \left[ \frac{\partial f}{\partial p_0}, \ldots, \frac{\partial f}{\partial p_{M-1}} \right] \\).
+    fn extract_grad<const M: usize>(&self) -> [f64; M] {
+        std::array::from_fn(|i| self.grad(i))
+    }
 }
 
 pub trait SecondOrder: FirstOrder {
@@ -35,6 +43,23 @@ pub trait SecondOrder: FirstOrder {
     fn hess(&self, i: usize, j: usize) -> f64;
     /// \\( \frac{\partial^2 f}{\partial p_i \partial p_j} \\): Mutable second derivative with respect to parameters \\( p_i \\) and \\( p_j \\) (parameters stored at indices i & j).
     fn hess_mut(&mut self, i: usize, j: usize) -> &mut f64;
+
+    /// Extract the full Hessian as a symmetric \\( M \times M \\) array.
+    ///
+    /// Returns \\( H_{ij} = \frac{\partial^2 f}{\partial p_i \partial p_j} \\)
+    /// with the lower triangle mirrored to the upper triangle.
+    fn extract_hess<const M: usize>(&self) -> [[f64; M]; M] {
+        let mut h = [[0.0; M]; M];
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..M {
+            for j in 0..=i {
+                let v = self.hess(i, j);
+                h[i][j] = v;
+                h[j][i] = v;
+            }
+        }
+        h
+    }
 }
 
 pub trait HigherOrder: SecondOrder {
@@ -70,4 +95,9 @@ pub trait DifferentiableMath: Differentiable {
     fn abs(self) -> Self;
 }
 
-pub trait AutoDiff: Differentiable + DifferentiableMath + Copy {}
+/// Marker trait for types that support both automatic differentiation
+/// (first-order gradient access) and mathematical functions.
+///
+/// This combines [`DifferentiableMath`] (computation) with [`FirstOrder`]
+/// (derivative extraction) into a single bound for convenience.
+pub trait AutoDiff: DifferentiableMath + FirstOrder {}
