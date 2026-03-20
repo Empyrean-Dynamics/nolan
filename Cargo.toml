@@ -1,9 +1,11 @@
 [package]
 name = "nolan"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.90.0"
-authors = ["Joachim Moeyens <joachim@empyrean-dynamics.com>"]
+authors = ["Joachim Moeyens <joachim@empyrean-dynamics.com>", "Empyrean Dynamics"]
+description = "Const-generic hyperdual numbers for automatic differentiation"
+repository = "https://github.com/Empyrean-Dynamics/nolan"
 include = ["src/**/*", "Cargo.toml", "docs/katex-header.html"]
 
 [lib]
