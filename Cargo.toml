@@ -1,6 +1,6 @@
 [package]
 name = "nolan"
-version = "1.1.1"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.90.0"
 authors = ["Joachim Moeyens <joachim@empyrean-dynamics.com>", "Empyrean Dynamics"]
@@ -20,4 +20,8 @@ criterion = { version = "0.4", features = ["html_reports"] }
 
 [[bench]]
 name = "benchmark_jets"
+harness = false
+
+[[bench]]
+name = "benchmark_linalg"
 harness = false
