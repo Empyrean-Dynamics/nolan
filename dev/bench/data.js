@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1774077610052,
+  "lastUpdate": 1774228693575,
   "repoUrl": "https://github.com/Empyrean-Dynamics/nolan",
   "entries": {
     "Nolan Benchmarks": [
@@ -983,6 +983,150 @@ window.BENCHMARK_DATA = {
             "name": "jet2_9_extract_hess",
             "value": 197,
             "range": "± 3",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "moeyensj@gmail.com",
+            "name": "Joachim Moeyens",
+            "username": "moeyensj"
+          },
+          "committer": {
+            "email": "moeyensj@gmail.com",
+            "name": "Joachim Moeyens",
+            "username": "moeyensj"
+          },
+          "distinct": true,
+          "id": "a4a20347a52364fbcdbdab23b6970f459afc2678",
+          "message": "Add extract_grad/extract_hess to traits, Copy supertrait on Differentiable\n\nAdd provided methods extract_grad<M> and extract_hess<M> to FirstOrder\nand SecondOrder traits for convenient gradient/Hessian extraction into\nfixed-size arrays. Move Copy into Differentiable supertraits since all\nconsumers already require it. Redefine AutoDiff as DifferentiableMath +\nFirstOrder.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>",
+          "timestamp": "2026-03-22T18:12:30-07:00",
+          "tree_id": "d39429d907d1ad118c46eaed24c98d4d2051fef0",
+          "url": "https://github.com/Empyrean-Dynamics/nolan/commit/a4a20347a52364fbcdbdab23b6970f459afc2678"
+        },
+        "date": 1774228693035,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "jet1_6_constant",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_constant",
+            "value": 20,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_variable",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_add",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_div",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul_scalar",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sin",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_cos",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sqrt",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_powi_3",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_atan2",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_add",
+            "value": 42,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul",
+            "value": 129,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sin",
+            "value": 97,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_gravity_accel",
+            "value": 50,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_extract_grad",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_extract_grad",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_extract_hess",
+            "value": 97,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_extract_hess",
+            "value": 200,
+            "range": "± 11",
             "unit": "ns/iter"
           }
         ]
