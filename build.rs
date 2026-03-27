@@ -57,10 +57,10 @@ fn run_git(args: &[&str]) -> Option<String> {
 /// Bump the patch component: "1.0.0" → "1.0.1"
 fn bump_patch(version: &str) -> String {
     let parts: Vec<&str> = version.split('.').collect();
-    if parts.len() == 3 {
-        if let Ok(patch) = parts[2].parse::<u64>() {
-            return format!("{}.{}.{}", parts[0], parts[1], patch + 1);
-        }
+    if parts.len() == 3
+        && let Ok(patch) = parts[2].parse::<u64>()
+    {
+        return format!("{}.{}.{}", parts[0], parts[1], patch + 1);
     }
     version.to_string()
 }
