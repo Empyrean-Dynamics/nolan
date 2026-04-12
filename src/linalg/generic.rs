@@ -157,6 +157,211 @@ pub fn mat_quadratic_form<T: Copy + DifferentiableMath, const N: usize>(
     result
 }
 
+/// Cholesky decomposition of an \\(N \times N\\) symmetric positive-definite matrix.
+///
+/// Returns the lower-triangular factor \\(L\\) such that \\(A = L L^\top\\).
+/// Returns `None` if the matrix is not positive-definite.
+#[allow(clippy::needless_range_loop)]
+pub fn mat_cholesky<const N: usize>(a: &[[f64; N]; N]) -> Option<[[f64; N]; N]> {
+    let mut l = [[0.0_f64; N]; N];
+    for i in 0..N {
+        for j in 0..=i {
+            let mut sum = 0.0;
+            for k in 0..j {
+                sum += l[i][k] * l[j][k];
+            }
+            if i == j {
+                let diag = a[i][i] - sum;
+                if diag <= 0.0 {
+                    return None;
+                }
+                l[i][j] = diag.sqrt();
+            } else {
+                l[i][j] = (a[i][j] - sum) / l[j][j];
+            }
+        }
+    }
+    Some(l)
+}
+
+/// Trace of an \\(N \times N\\) matrix: \\(\mathrm{Tr}(A) = \sum_i A_{ii}\\).
+#[inline]
+pub fn mat_trace<const N: usize>(a: &[[f64; N]; N]) -> f64 {
+    let mut t = 0.0;
+    for i in 0..N {
+        t += a[i][i];
+    }
+    t
+}
+
+/// Trace of the product of two \\(N \times N\\) matrices:
+/// \\(\mathrm{Tr}(AB) = \sum_{i,j} A_{ij} B_{ji}\\).
+///
+/// Computed without forming the full product matrix.
+#[inline]
+pub fn mat_trace_product<const N: usize>(a: &[[f64; N]; N], b: &[[f64; N]; N]) -> f64 {
+    let mut trace = 0.0;
+    for i in 0..N {
+        for j in 0..N {
+            trace += a[i][j] * b[j][i];
+        }
+    }
+    trace
+}
+
+/// Log-determinant of an \\(N \times N\\) matrix via LU decomposition with
+/// partial pivoting.
+///
+/// Returns \\(\ln |\det(A)|\\). Returns `NEG_INFINITY` if the matrix is singular.
+#[allow(clippy::needless_range_loop)]
+pub fn mat_log_det<const N: usize>(a: &[[f64; N]; N]) -> f64 {
+    let mut lu = *a;
+    let mut log_det = 0.0;
+
+    for col in 0..N {
+        let mut max_row = col;
+        let mut max_val = lu[col][col].abs();
+        for row in (col + 1)..N {
+            let v = lu[row][col].abs();
+            if v > max_val {
+                max_val = v;
+                max_row = row;
+            }
+        }
+        if max_val < 1e-300 {
+            return f64::NEG_INFINITY;
+        }
+        if max_row != col {
+            lu.swap(col, max_row);
+        }
+
+        log_det += lu[col][col].abs().ln();
+
+        for row in (col + 1)..N {
+            let factor = lu[row][col] / lu[col][col];
+            for j in (col + 1)..N {
+                lu[row][j] -= factor * lu[col][j];
+            }
+        }
+    }
+
+    log_det
+}
+
+/// Euclidean norm of an N-vector: \\(\lVert\mathbf{x}\rVert = \sqrt{\sum_i x_i^2}\\).
+#[inline]
+pub fn vec_norm<const N: usize>(x: &[f64; N]) -> f64 {
+    let mut sum = 0.0;
+    for item in x {
+        sum += item * item;
+    }
+    sum.sqrt()
+}
+
+/// Matrix-vector product \\(\mathbf{y} = A\mathbf{x}\\) for \\(N \times N\\) matrices.
+#[inline]
+#[allow(clippy::needless_range_loop)]
+pub fn mat_vec_mul<const N: usize>(a: &[[f64; N]; N], x: &[f64; N]) -> [f64; N] {
+    let mut y = [0.0; N];
+    for i in 0..N {
+        for j in 0..N {
+            y[i] += a[i][j] * x[j];
+        }
+    }
+    y
+}
+
+/// Squared Mahalanobis distance:
+/// \\(d^2 = (\mathbf{x} - \boldsymbol{\mu})^\top \Sigma^{-1} (\mathbf{x} - \boldsymbol{\mu})\\).
+///
+/// Returns `None` if the covariance matrix is singular.
+pub fn mahalanobis_distance_squared<const N: usize>(
+    x: &[f64; N],
+    mu: &[f64; N],
+    cov: &[[f64; N]; N],
+) -> Option<f64> {
+    let cov_inv = mat_inv(cov)?;
+    let mut delta = [0.0; N];
+    for i in 0..N {
+        delta[i] = x[i] - mu[i];
+    }
+    Some(mat_quadratic_form(&delta, &cov_inv))
+}
+
+/// Squared Mahalanobis distance using a pre-computed inverse covariance.
+#[inline]
+pub fn mahalanobis_distance_squared_with_inv<const N: usize>(
+    x: &[f64; N],
+    mu: &[f64; N],
+    cov_inv: &[[f64; N]; N],
+) -> f64 {
+    let mut delta = [0.0; N];
+    for i in 0..N {
+        delta[i] = x[i] - mu[i];
+    }
+    mat_quadratic_form(&delta, cov_inv)
+}
+
+/// Find the eigenvector corresponding to the largest absolute eigenvalue
+/// via power iteration.
+///
+/// Returns `(eigenvector, eigenvalue)` where the eigenvector is unit-normalized.
+/// Works for any real \\(N \times N\\) matrix (need not be symmetric).
+#[allow(clippy::needless_range_loop)]
+pub fn mat_eigenvector_max<const N: usize>(
+    a: &[[f64; N]; N],
+    max_iter: usize,
+    tol: f64,
+) -> ([f64; N], f64) {
+    // Initial vector: normalised [1, 1, ..., 1]
+    let inv_sqrt_n = 1.0 / (N as f64).sqrt();
+    let mut v = [inv_sqrt_n; N];
+    let mut lambda = 0.0_f64;
+
+    for _ in 0..max_iter {
+        let w = mat_vec_mul(a, &v);
+        let w_norm = vec_norm(&w);
+
+        if w_norm < 1e-30 {
+            return (v, 0.0);
+        }
+
+        // Sign of eigenvalue: dot(w, v_old)
+        let mut dot = 0.0;
+        for i in 0..N {
+            dot += w[i] * v[i];
+        }
+        let sign = if dot >= 0.0 { 1.0 } else { -1.0 };
+
+        // Update eigenvector
+        for i in 0..N {
+            v[i] = w[i] / w_norm;
+        }
+        lambda = sign * w_norm;
+
+        // Check convergence: ||Av - λv|| / |λ|
+        let av = mat_vec_mul(a, &v);
+        let mut residual_sq = 0.0;
+        for i in 0..N {
+            let diff = av[i] - lambda * v[i];
+            residual_sq += diff * diff;
+        }
+        if lambda.abs() > 1e-30 && residual_sq.sqrt() / lambda.abs() < tol {
+            break;
+        }
+    }
+
+    // Rayleigh quotient refinement
+    let av = mat_vec_mul(a, &v);
+    let mut numerator = 0.0;
+    for i in 0..N {
+        numerator += v[i] * av[i];
+    }
+    lambda = numerator; // v^T A v (v is unit)
+
+    (v, lambda)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +541,73 @@ mod tests {
         // Exactly singular matrix (row 3 = row 1)
         let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [1.0, 2.0, 3.0]];
         assert!(mat_inv::<f64, 3>(&a).is_none());
+    }
+
+    #[test]
+    fn test_mat_cholesky_3x3() {
+        let a = [[4.0, 2.0, 0.0], [2.0, 5.0, 1.0], [0.0, 1.0, 3.0]];
+        let l = mat_cholesky(&a).unwrap();
+        for i in 0..3 {
+            for j in 0..3 {
+                let mut sum = 0.0;
+                for k in 0..3 {
+                    sum += l[i][k] * l[j][k];
+                }
+                assert!((sum - a[i][j]).abs() < 1e-12);
+            }
+        }
+        assert!(l[0][1].abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_mat_cholesky_not_spd() {
+        let a = [[1.0, 0.0], [0.0, -1.0]];
+        assert!(mat_cholesky(&a).is_none());
+    }
+
+    #[test]
+    fn test_mat_cholesky_6x6_identity() {
+        let mut a = [[0.0_f64; 6]; 6];
+        for i in 0..6 {
+            a[i][i] = 1.0;
+        }
+        let l = mat_cholesky(&a).unwrap();
+        for i in 0..6 {
+            assert!((l[i][i] - 1.0).abs() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn test_mat_trace() {
+        let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        assert!((mat_trace(&a) - 15.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_mat_log_det() {
+        let a = [[2.0, 0.0], [0.0, 3.0]];
+        assert!((mat_log_det(&a) - 6.0_f64.ln()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_vec_norm() {
+        let x = [3.0, 4.0];
+        assert!((vec_norm(&x) - 5.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_mahalanobis_identity_cov() {
+        let x = [3.0, 4.0];
+        let mu = [0.0, 0.0];
+        let cov = [[1.0, 0.0], [0.0, 1.0]];
+        let d2 = mahalanobis_distance_squared(&x, &mu, &cov).unwrap();
+        assert!((d2 - 25.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_mat_eigenvector_max_diagonal() {
+        let a = [[3.0, 0.0], [0.0, 7.0]];
+        let (_v, lambda) = mat_eigenvector_max(&a, 100, 1e-12);
+        assert!((lambda - 7.0).abs() < 1e-8, "lambda={lambda}");
     }
 }
