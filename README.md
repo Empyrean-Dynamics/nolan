@@ -82,6 +82,63 @@ fn gravity<J: AutoDiff>(x: J, y: J, z: J, mu: f64) -> [J; 3] {
 }
 ```
 
+## Linear Algebra
+
+Stack-allocated generic matrix operations for any `N`:
+
+```rust
+use nolan::linalg::*;
+
+// Solve Ax = b (Gauss-Jordan with partial pivoting)
+let x = mat_solve(&a, &b).unwrap();
+
+// Cholesky decomposition (symmetric positive-definite)
+let l = mat_cholesky(&cov).unwrap();  // A = L L^T
+
+// Other operations
+let inv = mat_inv(&a).unwrap();
+let d2 = mahalanobis_distance_squared(&x, &mu, &cov).unwrap();
+let (v, lambda) = mat_eigenvector_max(&a, 100, 1e-12);
+let ld = mat_log_det(&a);
+let tr = mat_trace(&a);
+```
+
+Specialized fast paths for 3x3, 6x6, and 9x9 matrices.
+
+## Optimization
+
+Generic nonlinear least-squares solver (Gauss-Newton / Levenberg-Marquardt):
+
+```rust
+use nolan::optimization::*;
+
+let solution = solve_nlls(
+    |x: &[f64; 3]| {
+        // Return residuals + Jacobian at x
+        NLLSEvaluation { residuals, jacobian, cost }
+    },
+    [0.0; 3],           // initial guess
+    &NLLSConfig::default(),
+    None,                // optional Bayesian prior
+).unwrap();
+
+println!("x = {:?}, cost = {}", solution.x, solution.cost);
+```
+
+For stateful problems, implement the `NLLSProblem<N>` trait:
+
+```rust
+impl NLLSProblem<6> for MyProblem {
+    fn evaluate(&mut self, x: &[f64; 6]) -> NLLSEvaluation<6> {
+        // Propagate, compute residuals, extract Jacobian
+    }
+}
+let solution = solve(&mut problem, x0, &config, prior)?;
+```
+
+Features: LM adaptive damping, Bayesian prior augmentation, second-order
+Hessian correction (`solve2`), formal covariance extraction.
+
 ## Version
 
 ```rust
