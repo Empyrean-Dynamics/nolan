@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use nolan::jets::{Jet2, hess_size};
+    use nolan::jets::{Jet2, Jet3, hess_size, tens_size};
     use nolan::traits::AutoDiff;
 
     #[test]
@@ -116,6 +116,116 @@ mod tests {
 
         for i in 6..result.hess.len() {
             assert_eq!(result.hess[i], 0.0);
+        }
+    }
+
+    // ─── Jet3 polynomial tests ─────────────────────────────────
+
+    #[test]
+    fn test_jet3_univariate_cubic() {
+        // f(x) = 8x^3 + 4x^2 - 2x + 10
+        fn f<J: AutoDiff>(x: J) -> J {
+            x.powf(3.0) * 8.0 + x.powf(2.0) * 4.0 - x * 2.0 + 10.0
+        }
+
+        let x = Jet3::<1, { hess_size(1) }, { tens_size(1) }>::variable(1.0, 0);
+        let result = f(x);
+
+        assert_eq!(result.value, 20.0);
+        assert_eq!(result.grad[0], 30.0);
+        assert_eq!(result.hess[0], 56.0);
+        // d^3f/dx^3 = 48 (constant)
+        assert!((result.tens[0] - 48.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_jet3_univariate_quartic() {
+        // f(x) = x^4 at x=2
+        // d^3f/dx^3 = 24x = 48
+        let x = Jet3::<1, { hess_size(1) }, { tens_size(1) }>::variable(2.0, 0);
+        let result = x.powf(4.0);
+
+        assert_eq!(result.value, 16.0);
+        assert_eq!(result.grad[0], 32.0); // 4x^3 = 32
+        assert!((result.hess[0] - 48.0).abs() < 1e-10); // 12x^2 = 48
+        assert!((result.tens[0] - 48.0).abs() < 1e-10); // 24x = 48
+    }
+
+    #[test]
+    fn test_jet3_bivariate_product() {
+        // f(x,y) = x^2 * y^3 at (1, 2)
+        fn f<J: AutoDiff>(x: J, y: J) -> J {
+            x.powf(2.0) * y.powf(3.0)
+        }
+
+        let x = Jet3::<2, { hess_size(2) }, { tens_size(2) }>::variable(1.0, 0);
+        let y = Jet3::<2, { hess_size(2) }, { tens_size(2) }>::variable(2.0, 1);
+        let result = f(x, y);
+
+        // f(1,2) = 8
+        assert_eq!(result.value, 8.0);
+
+        // Third derivatives:
+        // d^3f/dx^3 = 0 (x^2 only has 2nd order)
+        assert!((result.tens[0]).abs() < 1e-10); // tens_index(0,0,0) = 0
+
+        // d^3f/dx^2dy = 6y^2 = 24
+        let idx_xxy = nolan::jets::tens_index(1, 0, 0).unwrap(); // (1,0,0) = d/dy d/dx d/dx
+        assert!((result.tens[idx_xxy] - 24.0).abs() < 1e-10);
+
+        // d^3f/dxdy^2 = 12xy = 24
+        let idx_xyy = nolan::jets::tens_index(1, 1, 0).unwrap(); // (1,1,0)
+        assert!((result.tens[idx_xyy] - 24.0).abs() < 1e-10);
+
+        // d^3f/dy^3 = 6x^2 = 6
+        let idx_yyy = nolan::jets::tens_index(1, 1, 1).unwrap(); // (1,1,1)
+        assert!((result.tens[idx_yyy] - 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_jet3_trivariate_product() {
+        // f(x,y,z) = x * y * z at (2, 3, 5)
+        // d^3f/dxdydz = 1, all other third partials are 0
+        let x = Jet3::<3, { hess_size(3) }, { tens_size(3) }>::variable(2.0, 0);
+        let y = Jet3::<3, { hess_size(3) }, { tens_size(3) }>::variable(3.0, 1);
+        let z = Jet3::<3, { hess_size(3) }, { tens_size(3) }>::variable(5.0, 2);
+        let result = x * y * z;
+
+        assert_eq!(result.value, 30.0);
+
+        // d^3f/dxdydz = 1
+        let idx_xyz = nolan::jets::tens_index(2, 1, 0).unwrap();
+        assert!((result.tens[idx_xyz] - 1.0).abs() < 1e-10);
+
+        // All pure third derivatives are zero
+        assert!((result.tens[nolan::jets::tens_index(0, 0, 0).unwrap()]).abs() < 1e-10);
+        assert!((result.tens[nolan::jets::tens_index(1, 1, 1).unwrap()]).abs() < 1e-10);
+        assert!((result.tens[nolan::jets::tens_index(2, 2, 2).unwrap()]).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_jet3_tensor_symmetry() {
+        // f(x,y,z) = x^2*y*z + x*y^2*z at (1, 2, 3)
+        fn f<J: AutoDiff>(x: J, y: J, z: J) -> J {
+            x.powf(2.0) * y * z + x * y.powf(2.0) * z
+        }
+
+        let x = Jet3::<3, { hess_size(3) }, { tens_size(3) }>::variable(1.0, 0);
+        let y = Jet3::<3, { hess_size(3) }, { tens_size(3) }>::variable(2.0, 1);
+        let z = Jet3::<3, { hess_size(3) }, { tens_size(3) }>::variable(3.0, 2);
+        let result = f(x, y, z);
+
+        use nolan::traits::ThirdOrder;
+        // Verify symmetry: t(i,j,k) should be invariant under all permutations
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    let v = result.tens(i, j, k);
+                    assert_eq!(v, result.tens(i, k, j), "symmetry fail at ({i},{j},{k})");
+                    assert_eq!(v, result.tens(j, i, k), "symmetry fail at ({i},{j},{k})");
+                    assert_eq!(v, result.tens(k, j, i), "symmetry fail at ({i},{j},{k})");
+                }
+            }
         }
     }
 }

@@ -11,10 +11,10 @@ Const-generic hyperdual numbers for automatic differentiation in Rust
 
 ---
 
-nolan provides first- and second-order jet types that propagate exact derivatives
-through arbitrary computations. It is designed for astrodynamics applications
-where derivatives of physical parameters (position, velocity, time) are needed
-for orbit determination, covariance propagation, and sensitivity analysis.
+nolan provides first-, second-, and third-order jet types that propagate exact
+derivatives through arbitrary computations. It is designed for astrodynamics
+applications where derivatives of physical parameters (position, velocity, time)
+are needed for orbit determination, covariance propagation, and sensitivity analysis.
 
 ## Types
 
@@ -52,25 +52,50 @@ let f = x * x * y;
 // ∂²f/∂x² = 2y = 6, ∂²f/∂x∂y = 2x = 4, ∂²f/∂y² = 0
 ```
 
+### Jet3\<N, H, T\>
+
+Third-order jet: tracks value, gradient, Hessian, and the full third-order
+tensor (stored as a lower-triangular array of size T = N(N+1)(N+2)/6).
+
+```rust
+use nolan::jets::{Jet3, hess_size, tens_size};
+
+let x = Jet3::<1, { hess_size(1) }, { tens_size(1) }>::variable(1.0, 0);
+let f = x.powi(4);
+// f = x⁴, value = 1
+// df/dx = 4x³ = 4
+// d²f/dx² = 12x² = 12
+// d³f/dx³ = 24x = 24
+assert_eq!(f.tens[0], 24.0);
+```
+
+| Type | Storage (N=6) | Storage (N=9) |
+|------|---------------|---------------|
+| Jet1 | 56 B | 80 B |
+| Jet2 | 224 B | 440 B |
+| Jet3 | 672 B | 1,760 B |
+
 ### Type Aliases
 
 ```rust
-type Dual = Jet1<1>;              // Single-variable first derivative
-type HyperDual = Jet2<2, 3>;     // Two-variable second derivatives
+type Dual = Jet1<1>;                     // Single-variable first derivative
+type HyperDual = Jet2<2, 3>;            // Two-variable second derivatives
+type HyperHyperDual = Jet3<2, 3, 4>;    // Two-variable third derivatives
 ```
 
 ## Traits
 
-- **`Differentiable`** — Base trait: `value()`, `constant()`, `variable()`. Implemented for `f64`, `Jet1`, `Jet2`.
-- **`FirstOrder`** — First derivatives: `grad(i)`. Implemented for `Jet1`, `Jet2`.
-- **`SecondOrder`** — Second derivatives: `hess(i, j)`. Implemented for `Jet2`.
+- **`Differentiable`** — Base trait: `value()`, `constant()`, `variable()`. Implemented for `f64`, `Jet1`, `Jet2`, `Jet3`.
+- **`FirstOrder`** — First derivatives: `grad(i)`. Implemented for `Jet1`, `Jet2`, `Jet3`.
+- **`SecondOrder`** — Second derivatives: `hess(i, j)`. Implemented for `Jet2`, `Jet3`.
+- **`ThirdOrder`** — Third derivatives: `tens(i, j, k)`. Implemented for `Jet3`.
 - **`DifferentiableMath`** — Transcendental functions: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `exp`, `ln`, `log`, `sqrt`, `powf`, `powi`, `abs`.
 - **`AutoDiff`** — Marker combining all of the above. Use this as a generic bound.
 
 ## Generic Programming
 
 Write functions once that work with `f64` (no derivatives), `Jet1` (gradients),
-or `Jet2` (Hessians):
+`Jet2` (Hessians), or `Jet3` (third-order tensors):
 
 ```rust
 use nolan::traits::AutoDiff;
