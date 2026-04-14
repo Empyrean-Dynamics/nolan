@@ -66,6 +66,35 @@ pub trait HigherOrder: SecondOrder {
     // TODO: Add support for higher order derivatives
 }
 
+/// Third-order derivative access.
+///
+/// Provides access to \\( \partial^3 f / \partial p_i \partial p_j \partial p_k \\).
+pub trait ThirdOrder: SecondOrder {
+    /// Third derivative with respect to parameters \\( p_i, p_j, p_k \\).
+    fn tens(&self, i: usize, j: usize, k: usize) -> f64;
+    /// Mutable third derivative.
+    fn tens_mut(&mut self, i: usize, j: usize, k: usize) -> &mut f64;
+
+    /// Extract the full third-order tensor as a symmetric \\( M \times M \times M \\) array.
+    fn extract_tens<const M: usize>(&self) -> [[[f64; M]; M]; M] {
+        let mut t = [[[0.0; M]; M]; M];
+        for i in 0..M {
+            for j in 0..=i {
+                for k in 0..=j {
+                    let v = self.tens(i, j, k);
+                    t[i][j][k] = v;
+                    t[i][k][j] = v;
+                    t[j][i][k] = v;
+                    t[j][k][i] = v;
+                    t[k][i][j] = v;
+                    t[k][j][i] = v;
+                }
+            }
+        }
+        t
+    }
+}
+
 pub trait DifferentiableMath: Differentiable {
     // Trigonometry
     fn sin(self) -> Self;
