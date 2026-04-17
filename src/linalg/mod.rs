@@ -24,4 +24,4 @@ pub use mat6::{
 pub use mat9::{
     mat9_add, mat9_inv, mat9_mul, mat9_solve, mat9_symmetrize, mat9_transpose, mat9_vec_mul,
 };
-pub use vec3::{cross3, dot3, norm3, normalize3};
+pub use vec3::{cross3, dot3, norm_squared3, norm3, normalize3};

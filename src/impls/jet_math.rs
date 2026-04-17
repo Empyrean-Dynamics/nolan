@@ -1,4 +1,4 @@
-use crate::jets::{Jet1, Jet2, Jet3, hess_index, tens_index, tens_size};
+use crate::jets::{Jet1, Jet2, Jet3, hess_idx, tens_idx, tens_size};
 
 // ─── Jet1 unary helper macro ────────────────────────────────────
 
@@ -35,7 +35,7 @@ macro_rules! impl_unary_jet2 {
             }
             for i in 0..N {
                 for j in 0..=i {
-                    let idx = hess_index(i, j).unwrap();
+                    let idx = hess_idx(i, j);
                     result.hess[idx] =
                         phi_p_val * $self.hess[idx] + phi_pp_val * $self.grad[i] * $self.grad[j];
                 }
@@ -76,11 +76,32 @@ impl<const N: usize> Jet1<N> {
         1.0 - t * t
     });
 
-    impl_unary_jet1!(exp, self, self.value.exp(), self.value.exp());
+    pub fn exp(self) -> Self {
+        let e = self.value.exp();
+        let mut result = Jet1 {
+            value: e,
+            grad: [0.0; N],
+        };
+        for i in 0..N {
+            result.grad[i] = e * self.grad[i];
+        }
+        result
+    }
 
     impl_unary_jet1!(ln, self, self.value.ln(), 1.0 / self.value);
 
-    impl_unary_jet1!(sqrt, self, self.value.sqrt(), { 0.5 / self.value.sqrt() });
+    pub fn sqrt(self) -> Self {
+        let s = self.value.sqrt();
+        let phi_p = 0.5 / s;
+        let mut result = Jet1 {
+            value: s,
+            grad: [0.0; N],
+        };
+        for i in 0..N {
+            result.grad[i] = phi_p * self.grad[i];
+        }
+        result
+    }
 
     impl_unary_jet1!(abs, self, self.value.abs(), {
         if self.value > 0.0 {
@@ -165,134 +186,257 @@ impl<const N: usize> Jet1<N> {
 // ─── Jet2 math ──────────────────────────────────────────────────
 
 impl<const N: usize, const H: usize> Jet2<N, H> {
-    impl_unary_jet2!(
-        sin,
-        self,
-        self.value.sin(),
-        self.value.cos(),
-        -self.value.sin()
-    );
-
-    impl_unary_jet2!(
-        cos,
-        self,
-        self.value.cos(),
-        -self.value.sin(),
-        -self.value.cos()
-    );
-
-    impl_unary_jet2!(
-        tan,
-        self,
-        { self.value.tan() },
-        {
-            let t = self.value.tan();
-            1.0 + t * t
-        },
-        {
-            let t = self.value.tan();
-            let sec2 = 1.0 + t * t;
-            2.0 * t * sec2
+    pub fn sin(self) -> Self {
+        let (s, c) = self.value.sin_cos();
+        let phi_p = c;
+        let phi_pp = -s;
+        let mut result = Jet2 {
+            value: s,
+            grad: [0.0; N],
+            hess: [0.0; H],
+        };
+        for i in 0..N {
+            result.grad[i] = phi_p * self.grad[i];
         }
-    );
-
-    impl_unary_jet2!(
-        asin,
-        self,
-        self.value.asin(),
-        {
-            let d = (1.0 - self.value * self.value).sqrt();
-            1.0 / d
-        },
-        {
-            let f = self.value;
-            let d = (1.0 - f * f).sqrt();
-            f / (d * d * d)
+        for i in 0..N {
+            for j in 0..=i {
+                let idx = hess_idx(i, j);
+                result.hess[idx] = phi_p * self.hess[idx] + phi_pp * self.grad[i] * self.grad[j];
+            }
         }
-    );
+        result
+    }
 
-    impl_unary_jet2!(
-        acos,
-        self,
-        self.value.acos(),
-        {
-            let d = (1.0 - self.value * self.value).sqrt();
-            -1.0 / d
-        },
-        {
-            let f = self.value;
-            let d = (1.0 - f * f).sqrt();
-            -f / (d * d * d)
+    pub fn cos(self) -> Self {
+        let (s, c) = self.value.sin_cos();
+        let phi_p = -s;
+        let phi_pp = -c;
+        let mut result = Jet2 {
+            value: c,
+            grad: [0.0; N],
+            hess: [0.0; H],
+        };
+        for i in 0..N {
+            result.grad[i] = phi_p * self.grad[i];
         }
-    );
-
-    impl_unary_jet2!(
-        atan,
-        self,
-        self.value.atan(),
-        {
-            let d = 1.0 + self.value * self.value;
-            1.0 / d
-        },
-        {
-            let f = self.value;
-            let d = 1.0 + f * f;
-            -2.0 * f / (d * d)
+        for i in 0..N {
+            for j in 0..=i {
+                let idx = hess_idx(i, j);
+                result.hess[idx] = phi_p * self.hess[idx] + phi_pp * self.grad[i] * self.grad[j];
+            }
         }
-    );
+        result
+    }
 
-    impl_unary_jet2!(
-        sinh,
-        self,
-        self.value.sinh(),
-        self.value.cosh(),
-        self.value.sinh()
-    );
-    impl_unary_jet2!(
-        cosh,
-        self,
-        self.value.cosh(),
-        self.value.sinh(),
-        self.value.cosh()
-    );
-
-    impl_unary_jet2!(
-        tanh,
-        self,
-        self.value.tanh(),
-        {
-            let t = self.value.tanh();
-            1.0 - t * t
-        },
-        {
-            let t = self.value.tanh();
-            let sech2 = 1.0 - t * t;
-            -2.0 * t * sech2
+    pub fn tan(self) -> Self {
+        let t = self.value.tan();
+        let sec2 = 1.0 + t * t;
+        let phi_p = sec2;
+        let phi_pp = 2.0 * t * sec2;
+        let mut result = Jet2 {
+            value: t,
+            grad: [0.0; N],
+            hess: [0.0; H],
+        };
+        for i in 0..N {
+            result.grad[i] = phi_p * self.grad[i];
         }
-    );
-
-    impl_unary_jet2!(
-        exp,
-        self,
-        self.value.exp(),
-        self.value.exp(),
-        self.value.exp()
-    );
-
-    impl_unary_jet2!(ln, self, self.value.ln(), { 1.0 / self.value }, {
-        -1.0 / (self.value * self.value)
-    });
-
-    impl_unary_jet2!(
-        sqrt,
-        self,
-        self.value.sqrt(),
-        { 0.5 / self.value.sqrt() },
-        {
-            let s = self.value.sqrt();
-            -0.25 / (s * s * s)
+        for i in 0..N {
+            for j in 0..=i {
+                let idx = hess_idx(i, j);
+                result.hess[idx] = phi_p * self.hess[idx] + phi_pp * self.grad[i] * self.grad[j];
+            }
         }
-    );
+        result
+    }
+
+    pub fn asin(self) -> Self {
+        let f = self.value;
+        let d = (1.0 - f * f).sqrt();
+        let phi_p = 1.0 / d;
+        let phi_pp = f / (d * d * d);
+        let mut result = Jet2 {
+            value: f.asin(),
+            grad: [0.0; N],
+            hess: [0.0; H],
+        };
+        for i in 0..N {
+            result.grad[i] = phi_p * self.grad[i];
+        }
+        for i in 0..N {
+            for j in 0..=i {
+                let idx = hess_idx(i, j);
+                result.hess[idx] = phi_p * self.hess[idx] + phi_pp * self.grad[i] * self.grad[j];
+            }
+        }
+        result
+    }
+
+    pub fn acos(self) -> Self {
+        let f = self.value;
+        let d = (1.0 - f * f).sqrt();
+        let phi_p = -1.0 / d;
+        let phi_pp = -f / (d * d * d);
+        let mut result = Jet2 {
+            value: f.acos(),
+            grad: [0.0; N],
+            hess: [0.0; H],
+        };
+        for i in 0..N {
+            result.grad[i] = phi_p * self.grad[i];
+        }
+        for i in 0..N {
+            for j in 0..=i {
+                let idx = hess_idx(i, j);
+                result.hess[idx] = phi_p * self.hess[idx] + phi_pp * self.grad[i] * self.grad[j];
+            }
+        }
+        result
+    }
+
+    pub fn atan(self) -> Self {
+        let f = self.value;
+        let d = 1.0 + f * f;
+        let phi_p = 1.0 / d;
+        let phi_pp = -2.0 * f / (d * d);
+        let mut result = Jet2 {
+            value: f.atan(),
+            grad: [0.0; N],
+            hess: [0.0; H],
+        };
+        for i in 0..N {
+            result.grad[i] = phi_p * self.grad[i];
+        }
+        for i in 0..N {
+            for j in 0..=i {
+                let idx = hess_idx(i, j);
+                result.hess[idx] = phi_p * self.hess[idx] + phi_pp * self.grad[i] * self.grad[j];
+            }
+        }
+        result
+    }
+
+    pub fn sinh(self) -> Self {
+        let sh = self.value.sinh();
+        let ch = self.value.cosh();
+        let mut result = Jet2 {
+            value: sh,
+            grad: [0.0; N],
+            hess: [0.0; H],
+        };
+        for i in 0..N {
+            result.grad[i] = ch * self.grad[i];
+        }
+        for i in 0..N {
+            for j in 0..=i {
+                let idx = hess_idx(i, j);
+                result.hess[idx] = ch * self.hess[idx] + sh * self.grad[i] * self.grad[j];
+            }
+        }
+        result
+    }
+
+    pub fn cosh(self) -> Self {
+        let sh = self.value.sinh();
+        let ch = self.value.cosh();
+        let mut result = Jet2 {
+            value: ch,
+            grad: [0.0; N],
+            hess: [0.0; H],
+        };
+        for i in 0..N {
+            result.grad[i] = sh * self.grad[i];
+        }
+        for i in 0..N {
+            for j in 0..=i {
+                let idx = hess_idx(i, j);
+                result.hess[idx] = sh * self.hess[idx] + ch * self.grad[i] * self.grad[j];
+            }
+        }
+        result
+    }
+
+    pub fn tanh(self) -> Self {
+        let t = self.value.tanh();
+        let sech2 = 1.0 - t * t;
+        let phi_pp = -2.0 * t * sech2;
+        let mut result = Jet2 {
+            value: t,
+            grad: [0.0; N],
+            hess: [0.0; H],
+        };
+        for i in 0..N {
+            result.grad[i] = sech2 * self.grad[i];
+        }
+        for i in 0..N {
+            for j in 0..=i {
+                let idx = hess_idx(i, j);
+                result.hess[idx] = sech2 * self.hess[idx] + phi_pp * self.grad[i] * self.grad[j];
+            }
+        }
+        result
+    }
+
+    pub fn exp(self) -> Self {
+        let e = self.value.exp();
+        let mut result = Jet2 {
+            value: e,
+            grad: [0.0; N],
+            hess: [0.0; H],
+        };
+        for i in 0..N {
+            result.grad[i] = e * self.grad[i];
+        }
+        for i in 0..N {
+            for j in 0..=i {
+                let idx = hess_idx(i, j);
+                result.hess[idx] = e * self.hess[idx] + e * self.grad[i] * self.grad[j];
+            }
+        }
+        result
+    }
+
+    pub fn ln(self) -> Self {
+        let v = self.value;
+        let phi_p = 1.0 / v;
+        let phi_pp = -1.0 / (v * v);
+        let mut result = Jet2 {
+            value: v.ln(),
+            grad: [0.0; N],
+            hess: [0.0; H],
+        };
+        for i in 0..N {
+            result.grad[i] = phi_p * self.grad[i];
+        }
+        for i in 0..N {
+            for j in 0..=i {
+                let idx = hess_idx(i, j);
+                result.hess[idx] = phi_p * self.hess[idx] + phi_pp * self.grad[i] * self.grad[j];
+            }
+        }
+        result
+    }
+
+    pub fn sqrt(self) -> Self {
+        let s = self.value.sqrt();
+        let phi_p = 0.5 / s;
+        let phi_pp = -0.25 / (s * s * s);
+        let mut result = Jet2 {
+            value: s,
+            grad: [0.0; N],
+            hess: [0.0; H],
+        };
+        for i in 0..N {
+            result.grad[i] = phi_p * self.grad[i];
+        }
+        for i in 0..N {
+            for j in 0..=i {
+                let idx = hess_idx(i, j);
+                result.hess[idx] = phi_p * self.hess[idx] + phi_pp * self.grad[i] * self.grad[j];
+            }
+        }
+        result
+    }
 
     impl_unary_jet2!(
         abs,
@@ -312,9 +456,10 @@ impl<const N: usize, const H: usize> Jet2<N, H> {
 
     pub fn powi(self, n: i32) -> Self {
         let nf = n as f64;
-        let phi = self.value.powi(n);
-        let phi_p = nf * self.value.powi(n - 1);
-        let phi_pp = nf * (nf - 1.0) * self.value.powi(n - 2);
+        let v = self.value;
+        let phi = v.powi(n);
+        let phi_p = nf * v.powi(n - 1);
+        let phi_pp = nf * (nf - 1.0) * v.powi(n - 2);
         let mut result = Jet2 {
             value: phi,
             grad: [0.0; N],
@@ -325,7 +470,7 @@ impl<const N: usize, const H: usize> Jet2<N, H> {
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 result.hess[idx] = phi_p * self.hess[idx] + phi_pp * self.grad[i] * self.grad[j];
             }
         }
@@ -333,9 +478,10 @@ impl<const N: usize, const H: usize> Jet2<N, H> {
     }
 
     pub fn powf(self, n: f64) -> Self {
-        let phi = self.value.powf(n);
-        let phi_p = n * self.value.powf(n - 1.0);
-        let phi_pp = n * (n - 1.0) * self.value.powf(n - 2.0);
+        let v = self.value;
+        let phi = v.powf(n);
+        let phi_p = n * v.powf(n - 1.0);
+        let phi_pp = n * (n - 1.0) * v.powf(n - 2.0);
         let mut result = Jet2 {
             value: phi,
             grad: [0.0; N],
@@ -346,7 +492,7 @@ impl<const N: usize, const H: usize> Jet2<N, H> {
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 result.hess[idx] = phi_p * self.hess[idx] + phi_pp * self.grad[i] * self.grad[j];
             }
         }
@@ -376,7 +522,7 @@ impl<const N: usize, const H: usize> Jet2<N, H> {
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 let du_ij = other.grad[j] * self.grad[i] + g * self.hess[idx]
                     - self.grad[j] * other.grad[i]
                     - f * other.hess[idx];
@@ -407,7 +553,7 @@ impl<const N: usize, const H: usize> Jet2<N, H> {
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 sin_result.hess[idx] = c * self.hess[idx] + (-s) * self.grad[i] * self.grad[j];
                 cos_result.hess[idx] = (-s) * self.hess[idx] + (-c) * self.grad[i] * self.grad[j];
             }
@@ -446,18 +592,18 @@ macro_rules! impl_unary_jet3 {
             }
             for i in 0..N {
                 for j in 0..=i {
-                    let idx = hess_index(i, j).unwrap();
+                    let idx = hess_idx(i, j);
                     result.hess[idx] =
                         phi_p_val * $self.hess[idx] + phi_pp_val * $self.grad[i] * $self.grad[j];
                 }
             }
             for i in 0..N {
                 for j in 0..=i {
-                    let h_ij = hess_index(i, j).unwrap();
+                    let h_ij = hess_idx(i, j);
                     for k in 0..=j {
-                        let t_idx = tens_index(i, j, k).unwrap();
-                        let h_ik = hess_index(i, k).unwrap();
-                        let h_jk = hess_index(j, k).unwrap();
+                        let t_idx = tens_idx(i, j, k);
+                        let h_ik = hess_idx(i, k);
+                        let h_jk = hess_idx(j, k);
                         result.tens[t_idx] = phi_p_val * $self.tens[t_idx]
                             + phi_pp_val
                                 * ($self.grad[i] * $self.hess[h_jk]
@@ -687,17 +833,17 @@ impl<const N: usize, const H: usize, const T: usize> Jet3<N, H, T> {
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 result.hess[idx] = phi_p * self.hess[idx] + phi_pp * self.grad[i] * self.grad[j];
             }
         }
         for i in 0..N {
             for j in 0..=i {
-                let h_ij = hess_index(i, j).unwrap();
+                let h_ij = hess_idx(i, j);
                 for k in 0..=j {
-                    let t_idx = tens_index(i, j, k).unwrap();
-                    let h_ik = hess_index(i, k).unwrap();
-                    let h_jk = hess_index(j, k).unwrap();
+                    let t_idx = tens_idx(i, j, k);
+                    let h_ik = hess_idx(i, k);
+                    let h_jk = hess_idx(j, k);
                     result.tens[t_idx] = phi_p * self.tens[t_idx]
                         + phi_pp
                             * (self.grad[i] * self.hess[h_jk]
@@ -726,17 +872,17 @@ impl<const N: usize, const H: usize, const T: usize> Jet3<N, H, T> {
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 result.hess[idx] = phi_p * self.hess[idx] + phi_pp * self.grad[i] * self.grad[j];
             }
         }
         for i in 0..N {
             for j in 0..=i {
-                let h_ij = hess_index(i, j).unwrap();
+                let h_ij = hess_idx(i, j);
                 for k in 0..=j {
-                    let t_idx = tens_index(i, j, k).unwrap();
-                    let h_ik = hess_index(i, k).unwrap();
-                    let h_jk = hess_index(j, k).unwrap();
+                    let t_idx = tens_idx(i, j, k);
+                    let h_ik = hess_idx(i, k);
+                    let h_jk = hess_idx(j, k);
                     result.tens[t_idx] = phi_p * self.tens[t_idx]
                         + phi_pp
                             * (self.grad[i] * self.hess[h_jk]
@@ -773,7 +919,7 @@ impl<const N: usize, const H: usize, const T: usize> Jet3<N, H, T> {
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 let du_ij = other.grad[j] * self.grad[i] + g * self.hess[idx]
                     - self.grad[j] * other.grad[i]
                     - f * other.hess[idx];
@@ -813,7 +959,7 @@ impl<const N: usize, const H: usize, const T: usize> Jet3<N, H, T> {
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 sin_result.hess[idx] = c * self.hess[idx] + (-s) * self.grad[i] * self.grad[j];
                 cos_result.hess[idx] = (-s) * self.hess[idx] + (-c) * self.grad[i] * self.grad[j];
             }
@@ -822,11 +968,11 @@ impl<const N: usize, const H: usize, const T: usize> Jet3<N, H, T> {
         // cos: φ'=-s, φ''=-c, φ'''=s
         for i in 0..N {
             for j in 0..=i {
-                let h_ij = hess_index(i, j).unwrap();
+                let h_ij = hess_idx(i, j);
                 for k in 0..=j {
-                    let t_idx = tens_index(i, j, k).unwrap();
-                    let h_ik = hess_index(i, k).unwrap();
-                    let h_jk = hess_index(j, k).unwrap();
+                    let t_idx = tens_idx(i, j, k);
+                    let h_ik = hess_idx(i, k);
+                    let h_jk = hess_idx(j, k);
                     let gi_hess_jk = self.grad[i] * self.hess[h_jk]
                         + self.grad[j] * self.hess[h_ik]
                         + self.grad[k] * self.hess[h_ij];

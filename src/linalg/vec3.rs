@@ -16,10 +16,16 @@ pub fn cross3<T: Copy + DifferentiableMath>(a: &[T; 3], b: &[T; 3]) -> [T; 3] {
     ]
 }
 
+/// Squared Euclidean norm of a 3-vector: \\(x_1^2 + x_2^2 + x_3^2\\).
+#[inline]
+pub fn norm_squared3<T: Copy + DifferentiableMath>(x: &[T; 3]) -> T {
+    x[0] * x[0] + x[1] * x[1] + x[2] * x[2]
+}
+
 /// Euclidean norm of a 3-vector: \\(\lVert\mathbf{x}\rVert = \sqrt{x_1^2 + x_2^2 + x_3^2}\\).
 #[inline]
 pub fn norm3<T: Copy + DifferentiableMath>(x: &[T; 3]) -> T {
-    (x[0].powi(2) + x[1].powi(2) + x[2].powi(2)).sqrt()
+    norm_squared3(x).sqrt()
 }
 
 /// Normalize a 3-vector: \\(\hat{\mathbf{x}} = \mathbf{x} / \lVert\mathbf{x}\rVert\\).

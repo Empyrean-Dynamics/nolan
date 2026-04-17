@@ -1,6 +1,6 @@
-use std::ops::{Add, Div, Mul, Neg, Sub};
+use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-use crate::jets::{Jet1, Jet2, Jet3, hess_index, hess_size, tens_index, tens_size};
+use crate::jets::{Jet1, Jet2, Jet3, hess_idx, hess_size, tens_idx, tens_size};
 
 // ─── Jet1: Jet + Jet ────────────────────────────────────────────
 
@@ -227,7 +227,7 @@ impl<const N: usize, const H: usize> Mul for Jet2<N, H> {
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 result.hess[idx] = self.value * rhs.hess[idx]
                     + rhs.value * self.hess[idx]
                     + self.grad[i] * rhs.grad[j]
@@ -252,7 +252,7 @@ impl<const N: usize, const H: usize> Div for Jet2<N, H> {
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 result.hess[idx] = (self.hess[idx]
                     - result.value * rhs.hess[idx]
                     - result.grad[i] * rhs.grad[j]
@@ -386,7 +386,7 @@ impl<const N: usize, const H: usize> Div<Jet2<N, H>> for f64 {
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 result.hess[idx] = (-result.value * rhs.hess[idx]
                     - result.grad[i] * rhs.grad[j]
                     - result.grad[j] * rhs.grad[i])
@@ -460,7 +460,7 @@ impl<const N: usize, const H: usize, const T: usize> Mul for Jet3<N, H, T> {
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 result.hess[idx] = self.value * rhs.hess[idx]
                     + rhs.value * self.hess[idx]
                     + self.grad[i] * rhs.grad[j]
@@ -473,11 +473,11 @@ impl<const N: usize, const H: usize, const T: usize> Mul for Jet3<N, H, T> {
         //   + ∂g/∂p_i·∂²f/∂p_j∂p_k + ∂g/∂p_j·∂²f/∂p_i∂p_k + ∂g/∂p_k·∂²f/∂p_i∂p_j
         for i in 0..N {
             for j in 0..=i {
-                let h_ij = hess_index(i, j).unwrap();
+                let h_ij = hess_idx(i, j);
                 for k in 0..=j {
-                    let t_idx = tens_index(i, j, k).unwrap();
-                    let h_ik = hess_index(i, k).unwrap();
-                    let h_jk = hess_index(j, k).unwrap();
+                    let t_idx = tens_idx(i, j, k);
+                    let h_ik = hess_idx(i, k);
+                    let h_jk = hess_idx(j, k);
                     result.tens[t_idx] = self.value * rhs.tens[t_idx]
                         + rhs.value * self.tens[t_idx]
                         + self.grad[i] * rhs.hess[h_jk]
@@ -508,7 +508,7 @@ impl<const N: usize, const H: usize, const T: usize> Div for Jet3<N, H, T> {
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 result.hess[idx] = (self.hess[idx]
                     - result.value * rhs.hess[idx]
                     - result.grad[i] * rhs.grad[j]
@@ -523,11 +523,11 @@ impl<const N: usize, const H: usize, const T: usize> Div for Jet3<N, H, T> {
         // ) / g.value
         for i in 0..N {
             for j in 0..=i {
-                let h_ij = hess_index(i, j).unwrap();
+                let h_ij = hess_idx(i, j);
                 for k in 0..=j {
-                    let t_idx = tens_index(i, j, k).unwrap();
-                    let h_ik = hess_index(i, k).unwrap();
-                    let h_jk = hess_index(j, k).unwrap();
+                    let t_idx = tens_idx(i, j, k);
+                    let h_ik = hess_idx(i, k);
+                    let h_jk = hess_idx(j, k);
                     result.tens[t_idx] = (self.tens[t_idx]
                         - result.value * rhs.tens[t_idx]
                         - result.grad[i] * rhs.hess[h_jk]
@@ -681,7 +681,7 @@ impl<const N: usize, const H: usize, const T: usize> Div<Jet3<N, H, T>> for f64 
         }
         for i in 0..N {
             for j in 0..=i {
-                let idx = hess_index(i, j).unwrap();
+                let idx = hess_idx(i, j);
                 result.hess[idx] = (-result.value * rhs.hess[idx]
                     - result.grad[i] * rhs.grad[j]
                     - result.grad[j] * rhs.grad[i])
@@ -690,11 +690,11 @@ impl<const N: usize, const H: usize, const T: usize> Div<Jet3<N, H, T>> for f64 
         }
         for i in 0..N {
             for j in 0..=i {
-                let h_ij = hess_index(i, j).unwrap();
+                let h_ij = hess_idx(i, j);
                 for k in 0..=j {
-                    let t_idx = tens_index(i, j, k).unwrap();
-                    let h_ik = hess_index(i, k).unwrap();
-                    let h_jk = hess_index(j, k).unwrap();
+                    let t_idx = tens_idx(i, j, k);
+                    let h_ik = hess_idx(i, k);
+                    let h_jk = hess_idx(j, k);
                     result.tens[t_idx] = (-result.value * rhs.tens[t_idx]
                         - result.grad[i] * rhs.hess[h_jk]
                         - result.grad[j] * rhs.hess[h_ik]
@@ -707,5 +707,180 @@ impl<const N: usize, const H: usize, const T: usize> Div<Jet3<N, H, T>> for f64 
             }
         }
         result
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Compound assignment operators
+// ═══════════════════════════════════════════════════════════════
+
+// ─── Jet1: Assign ops ──────────────────────────────────────────
+
+impl<const N: usize> AddAssign for Jet1<N> {
+    fn add_assign(&mut self, rhs: Self) {
+        self.value += rhs.value;
+        for i in 0..N {
+            self.grad[i] += rhs.grad[i];
+        }
+    }
+}
+
+impl<const N: usize> SubAssign for Jet1<N> {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.value -= rhs.value;
+        for i in 0..N {
+            self.grad[i] -= rhs.grad[i];
+        }
+    }
+}
+
+impl<const N: usize> AddAssign<f64> for Jet1<N> {
+    fn add_assign(&mut self, rhs: f64) {
+        self.value += rhs;
+    }
+}
+
+impl<const N: usize> SubAssign<f64> for Jet1<N> {
+    fn sub_assign(&mut self, rhs: f64) {
+        self.value -= rhs;
+    }
+}
+
+impl<const N: usize> MulAssign<f64> for Jet1<N> {
+    fn mul_assign(&mut self, rhs: f64) {
+        self.value *= rhs;
+        for i in 0..N {
+            self.grad[i] *= rhs;
+        }
+    }
+}
+
+impl<const N: usize> DivAssign<f64> for Jet1<N> {
+    fn div_assign(&mut self, rhs: f64) {
+        let inv = 1.0 / rhs;
+        *self *= inv;
+    }
+}
+
+// ─── Jet2: Assign ops ──────────────────────────────────────────
+
+impl<const N: usize, const H: usize> AddAssign for Jet2<N, H> {
+    fn add_assign(&mut self, rhs: Self) {
+        self.value += rhs.value;
+        for i in 0..N {
+            self.grad[i] += rhs.grad[i];
+        }
+        for i in 0..hess_size(N) {
+            self.hess[i] += rhs.hess[i];
+        }
+    }
+}
+
+impl<const N: usize, const H: usize> SubAssign for Jet2<N, H> {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.value -= rhs.value;
+        for i in 0..N {
+            self.grad[i] -= rhs.grad[i];
+        }
+        for i in 0..hess_size(N) {
+            self.hess[i] -= rhs.hess[i];
+        }
+    }
+}
+
+impl<const N: usize, const H: usize> AddAssign<f64> for Jet2<N, H> {
+    fn add_assign(&mut self, rhs: f64) {
+        self.value += rhs;
+    }
+}
+
+impl<const N: usize, const H: usize> SubAssign<f64> for Jet2<N, H> {
+    fn sub_assign(&mut self, rhs: f64) {
+        self.value -= rhs;
+    }
+}
+
+impl<const N: usize, const H: usize> MulAssign<f64> for Jet2<N, H> {
+    fn mul_assign(&mut self, rhs: f64) {
+        self.value *= rhs;
+        for i in 0..N {
+            self.grad[i] *= rhs;
+        }
+        for i in 0..hess_size(N) {
+            self.hess[i] *= rhs;
+        }
+    }
+}
+
+impl<const N: usize, const H: usize> DivAssign<f64> for Jet2<N, H> {
+    fn div_assign(&mut self, rhs: f64) {
+        let inv = 1.0 / rhs;
+        *self *= inv;
+    }
+}
+
+// ─── Jet3: Assign ops ──────────────────────────────────────────
+
+impl<const N: usize, const H: usize, const T: usize> AddAssign for Jet3<N, H, T> {
+    fn add_assign(&mut self, rhs: Self) {
+        self.value += rhs.value;
+        for i in 0..N {
+            self.grad[i] += rhs.grad[i];
+        }
+        for i in 0..hess_size(N) {
+            self.hess[i] += rhs.hess[i];
+        }
+        for i in 0..tens_size(N) {
+            self.tens[i] += rhs.tens[i];
+        }
+    }
+}
+
+impl<const N: usize, const H: usize, const T: usize> SubAssign for Jet3<N, H, T> {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.value -= rhs.value;
+        for i in 0..N {
+            self.grad[i] -= rhs.grad[i];
+        }
+        for i in 0..hess_size(N) {
+            self.hess[i] -= rhs.hess[i];
+        }
+        for i in 0..tens_size(N) {
+            self.tens[i] -= rhs.tens[i];
+        }
+    }
+}
+
+impl<const N: usize, const H: usize, const T: usize> AddAssign<f64> for Jet3<N, H, T> {
+    fn add_assign(&mut self, rhs: f64) {
+        self.value += rhs;
+    }
+}
+
+impl<const N: usize, const H: usize, const T: usize> SubAssign<f64> for Jet3<N, H, T> {
+    fn sub_assign(&mut self, rhs: f64) {
+        self.value -= rhs;
+    }
+}
+
+impl<const N: usize, const H: usize, const T: usize> MulAssign<f64> for Jet3<N, H, T> {
+    fn mul_assign(&mut self, rhs: f64) {
+        self.value *= rhs;
+        for i in 0..N {
+            self.grad[i] *= rhs;
+        }
+        for i in 0..hess_size(N) {
+            self.hess[i] *= rhs;
+        }
+        for i in 0..tens_size(N) {
+            self.tens[i] *= rhs;
+        }
+    }
+}
+
+impl<const N: usize, const H: usize, const T: usize> DivAssign<f64> for Jet3<N, H, T> {
+    fn div_assign(&mut self, rhs: f64) {
+        let inv = 1.0 / rhs;
+        *self *= inv;
     }
 }
