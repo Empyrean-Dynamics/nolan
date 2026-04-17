@@ -1,13 +1,6 @@
 /// Get the linear index of a Hessian matrix stored in lower triangular form.
+#[inline(always)]
 pub fn hess_index(i: usize, j: usize) -> Option<usize> {
-    // Lower triangular form
-    // i,j
-    // 0,0
-    // 1,0  1,1
-    // 2,0, 2,1, 2,2
-    // 3,0, 3,1, 3,2, 3,3
-    // ->   0      1      2      3      4      5      6      7      8      9
-    // -> (0,0), (1,0), (1,1), (2,0), (2,1), (2,2), (3,0), (3,1), (3,2), (3,3)
     if i < j {
         hess_index(j, i)
     } else {
@@ -15,8 +8,15 @@ pub fn hess_index(i: usize, j: usize) -> Option<usize> {
     }
 }
 
+/// Lower-triangular index assuming canonical ordering (i >= j).
+#[inline(always)]
+pub fn hess_idx(i: usize, j: usize) -> usize {
+    i * (i + 1) / 2 + j
+}
+
 /// Calculate the size of the flattened hessian matrix given
 /// n parameters.
+#[inline(always)]
 pub const fn hess_size(n: usize) -> usize {
     n * (n + 1) / 2
 }
@@ -87,8 +87,8 @@ impl<const N: usize, const H: usize> Jet2<N, H> {
 /// Get the linear index of a third-order tensor stored in lower-triangular form.
 ///
 /// Canonical ordering: `i >= j >= k`. All permutations map to the same index.
+#[inline(always)]
 pub fn tens_index(i: usize, j: usize, k: usize) -> Option<usize> {
-    // Sort to canonical order: a >= b >= c
     let (mut a, mut b, mut c) = (i, j, k);
     if a < b {
         std::mem::swap(&mut a, &mut b);
@@ -102,8 +102,15 @@ pub fn tens_index(i: usize, j: usize, k: usize) -> Option<usize> {
     Some(a * (a + 1) * (a + 2) / 6 + b * (b + 1) / 2 + c)
 }
 
+/// Third-order tensor index assuming canonical ordering (i >= j >= k).
+#[inline(always)]
+pub fn tens_idx(i: usize, j: usize, k: usize) -> usize {
+    i * (i + 1) * (i + 2) / 6 + j * (j + 1) / 2 + k
+}
+
 /// Calculate the size of the flattened third-order tensor given
 /// n parameters: \\( n(n+1)(n+2)/6 \\).
+#[inline(always)]
 pub const fn tens_size(n: usize) -> usize {
     n * (n + 1) * (n + 2) / 6
 }

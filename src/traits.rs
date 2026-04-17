@@ -1,4 +1,4 @@
-use std::ops::{Add, Div, Mul, Neg, Sub};
+use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
 pub trait Differentiable:
     Copy
@@ -12,6 +12,12 @@ pub trait Differentiable:
     + Sub<f64, Output = Self>
     + Mul<f64, Output = Self>
     + Div<f64, Output = Self>
+    + AddAssign
+    + SubAssign
+    + AddAssign<f64>
+    + SubAssign<f64>
+    + MulAssign<f64>
+    + DivAssign<f64>
 {
     /// Function value.
     fn value(&self) -> f64;
