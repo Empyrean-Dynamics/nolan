@@ -457,4 +457,55 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn differentiate2_9_matches_generic() {
+        // f(x0..x8) = Σ i·xᵢ². Hessian is diagonal with 2i on the diagonal.
+        let x = [0.5, 0.4, 0.3, 0.2, 0.1, 0.0, -0.1, -0.2, -0.3];
+
+        let (v_g, g_g, h_g) = differentiate2::<9, { hess_size(9) }, _>(x, |xs| {
+            let mut acc = Jet2::<9, { hess_size(9) }>::constant(0.0);
+            for (i, xi) in xs.into_iter().enumerate() {
+                acc += xi * xi * (i as f64);
+            }
+            acc
+        });
+        let (v_s, g_s, h_s) = differentiate2_9(x, |xs| {
+            let mut acc = Jet2::<9, 45>::constant(0.0);
+            for (i, xi) in xs.into_iter().enumerate() {
+                acc += xi * xi * (i as f64);
+            }
+            acc
+        });
+        assert_eq!(v_g, v_s);
+        for i in 0..9 {
+            assert_eq!(g_g[i], g_s[i]);
+            for j in 0..9 {
+                assert_eq!(h_g[i][j], h_s[i][j]);
+            }
+        }
+        // Spot-check a closed form: ∂²/∂x₃² = 2·3 = 6.
+        assert!(close(h_s[3][3], 6.0));
+        assert!(close(h_s[3][4], 0.0));
+    }
+
+    #[test]
+    fn differentiate3_9_gives_nonzero_tens() {
+        // f(x0..x8) = x0·x1·x2 + x3·x4·x5 + x6·x7·x8.
+        // All pure trilinear terms: ∂³f/∂x_a ∂x_b ∂x_c = 1 for (a,b,c) in
+        // {(0,1,2),(3,4,5),(6,7,8)} (and permutations), else 0.
+        let x = [1.0; 9];
+        let (value, _grad, _hess, tens) = differentiate3_9(x, |[a, b, c, d, e, f, g, h, i]| {
+            a * b * c + d * e * f + g * h * i
+        });
+        assert!(close(value, 3.0));
+        // Only these index triples (after canonicalizing) should be 1.
+        assert!(close(tens[0][1][2], 1.0));
+        assert!(close(tens[2][1][0], 1.0)); // symmetry
+        assert!(close(tens[3][4][5], 1.0));
+        assert!(close(tens[6][7][8], 1.0));
+        // Something that should be zero:
+        assert!(close(tens[0][0][0], 0.0));
+        assert!(close(tens[0][3][6], 0.0));
+    }
 }

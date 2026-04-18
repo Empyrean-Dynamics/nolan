@@ -539,6 +539,85 @@ fn bench_jet3_9_gravity_pattern(c: &mut Criterion) {
     });
 }
 
+// ─── differentiate convenience API ────────────────────────────────────
+//
+// Measure the full "seed + compute + extract" round-trip cost. Compared to
+// the corresponding jet*_gravity_accel benches (compute-only, no seeding
+// or extraction), these show the wrapper overhead.
+
+use nolan::differentiate::{
+    differentiate1, differentiate1_vec, differentiate2_6, differentiate3_6,
+};
+
+fn bench_differentiate1_6_gravity(c: &mut Criterion) {
+    let state = [1.0, 0.5, 0.1, 0.0, 0.0, 0.0];
+    let mu = 1.327e11_f64;
+
+    c.bench_function("differentiate1_6_gravity_magnitude", |bench| {
+        bench.iter(|| {
+            let state = black_box(state);
+            black_box(differentiate1(state, |[x, y, z, _vx, _vy, _vz]| {
+                let r2 = x * x + y * y + z * z;
+                let r = r2.sqrt();
+                mu / (r * r2)
+            }))
+        })
+    });
+}
+
+fn bench_differentiate2_6_gravity(c: &mut Criterion) {
+    let state = [1.0, 0.5, 0.1, 0.0, 0.0, 0.0];
+    let mu = 1.327e11_f64;
+
+    c.bench_function("differentiate2_6_gravity_magnitude", |bench| {
+        bench.iter(|| {
+            let state = black_box(state);
+            black_box(differentiate2_6(state, |[x, y, z, _vx, _vy, _vz]| {
+                let r2 = x * x + y * y + z * z;
+                let r = r2.sqrt();
+                mu / (r * r2)
+            }))
+        })
+    });
+}
+
+fn bench_differentiate3_6_gravity(c: &mut Criterion) {
+    let state = [1.0, 0.5, 0.1, 0.0, 0.0, 0.0];
+    let mu = 1.327e11_f64;
+
+    c.bench_function("differentiate3_6_gravity_magnitude", |bench| {
+        bench.iter(|| {
+            let state = black_box(state);
+            black_box(differentiate3_6(state, |[x, y, z, _vx, _vy, _vz]| {
+                let r2 = x * x + y * y + z * z;
+                let r = r2.sqrt();
+                mu / (r * r2)
+            }))
+        })
+    });
+}
+
+fn bench_differentiate1_vec_gravity_accel(c: &mut Criterion) {
+    // Vector-valued: f: R^6 → R^3 returning the 3-component acceleration.
+    let state = [1.0, 0.5, 0.1, 0.0, 0.0, 0.0];
+    let mu = 1.327e11_f64;
+
+    c.bench_function("differentiate1_6_3_gravity_accel", |bench| {
+        bench.iter(|| {
+            let state = black_box(state);
+            black_box(differentiate1_vec::<6, 3, _>(
+                state,
+                |[x, y, z, _vx, _vy, _vz]| {
+                    let r2 = x * x + y * y + z * z;
+                    let r = r2.sqrt();
+                    let r3_inv = r.powi(-3) * mu;
+                    [x * r3_inv, y * r3_inv, z * r3_inv]
+                },
+            ))
+        })
+    });
+}
+
 criterion_group!(
     benches,
     // constants
@@ -602,5 +681,10 @@ criterion_group!(
     bench_jet2_extract_hess_9,
     bench_jet3_extract_tens_6,
     bench_jet3_extract_tens_9,
+    // differentiate convenience wrapper (seed + compute + extract)
+    bench_differentiate1_6_gravity,
+    bench_differentiate2_6_gravity,
+    bench_differentiate3_6_gravity,
+    bench_differentiate1_vec_gravity_accel,
 );
 criterion_main!(benches);
