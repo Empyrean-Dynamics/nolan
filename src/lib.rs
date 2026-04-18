@@ -1,3 +1,4 @@
+pub mod differentiate;
 pub mod impls;
 pub mod jets;
 pub mod linalg;
