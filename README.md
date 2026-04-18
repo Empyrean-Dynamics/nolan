@@ -107,6 +107,39 @@ fn gravity<J: AutoDiff>(x: J, y: J, z: J, mu: f64) -> [J; 3] {
 }
 ```
 
+## Convenience API: `differentiate`
+
+For one-shot derivative computations, the `differentiate` module hides the
+Jet seeding + extraction boilerplate:
+
+```rust
+use nolan::differentiate::{differentiate1, differentiate2_6, differentiate3_6};
+
+// First derivatives
+let (value, grad) = differentiate1([1.5, 2.0], |[x, y]| x * y + x * x);
+// value = 5.25, grad = [5.0, 1.5]
+
+// Second derivatives (6-parameter specialization avoids spelling out H)
+let (value, grad, hess) =
+    differentiate2_6([1.0, 0.5, 0.1, 0.0, 0.0, 0.0], |[x, y, z, _, _, _]| {
+        (x * x + y * y + z * z).sqrt()
+    });
+
+// Third derivatives
+let (value, grad, hess, tens) = differentiate3_6(state, |xs| compute_miss_distance(xs));
+```
+
+Six variants: `differentiate1`/`differentiate2`/`differentiate3` for scalar
+\\( f: \mathbb{R}^N \to \mathbb{R} \\), plus `_vec` variants for vector-valued
+\\( f: \mathbb{R}^N \to \mathbb{R}^M \\) that return the full Jacobian (and
+higher-order tensors stacked per output). Specialized `differentiate2_6`,
+`differentiate2_9`, `differentiate3_6`, `differentiate3_9` helpers inline the
+hessian/tensor sizes for the common 6- and 9-parameter state cases.
+
+The wrapper is essentially overhead-free — the seeding + extraction is in the
+same ballpark as the compute itself (~0.4 ns overhead on a 25 ns Jet1 gravity
+evaluation, see `benchmark_jets.rs`).
+
 ## Linear Algebra
 
 Stack-allocated generic matrix operations for any `N`:
