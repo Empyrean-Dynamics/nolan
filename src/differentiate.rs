@@ -212,6 +212,187 @@ where
     differentiate3::<9, 45, 165, _>(x, f)
 }
 
+// ─── Runtime-dispatched differentiate ────────────────────────────────────
+
+use crate::traits::AutoDiff;
+
+/// Selects which order of derivatives to compute at runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Order {
+    First,
+    Second,
+    Third,
+}
+
+/// Result of [`differentiate_dyn`] / [`differentiate_dyn_6`] / [`differentiate_dyn_9`].
+///
+/// Use the accessors ([`Self::values`], [`Self::jacobian`], [`Self::hessians`],
+/// [`Self::tensors`]) for uniform consumption, or match on the variant when the
+/// higher-order fields are needed unconditionally.
+///
+/// The Hessian and third-order-tensor fields are `Box`ed so the enum stays
+/// small regardless of which variant is returned; this keeps the `First`
+/// branch fast for cases where runtime dispatch is frequent.
+#[derive(Clone, Debug)]
+pub enum Derivatives<const N: usize, const M: usize> {
+    First {
+        values: [f64; M],
+        jacobian: [Gradient<N>; M],
+    },
+    Second {
+        values: [f64; M],
+        jacobian: [Gradient<N>; M],
+        hessians: Box<[Hessian<N>; M]>,
+    },
+    Third {
+        values: [f64; M],
+        jacobian: [Gradient<N>; M],
+        hessians: Box<[Hessian<N>; M]>,
+        tensors: Box<[ThirdOrderTensor<N>; M]>,
+    },
+}
+
+impl<const N: usize, const M: usize> Derivatives<N, M> {
+    pub fn order(&self) -> Order {
+        match self {
+            Derivatives::First { .. } => Order::First,
+            Derivatives::Second { .. } => Order::Second,
+            Derivatives::Third { .. } => Order::Third,
+        }
+    }
+
+    pub fn values(&self) -> &[f64; M] {
+        match self {
+            Derivatives::First { values, .. }
+            | Derivatives::Second { values, .. }
+            | Derivatives::Third { values, .. } => values,
+        }
+    }
+
+    pub fn jacobian(&self) -> &[Gradient<N>; M] {
+        match self {
+            Derivatives::First { jacobian, .. }
+            | Derivatives::Second { jacobian, .. }
+            | Derivatives::Third { jacobian, .. } => jacobian,
+        }
+    }
+
+    /// Returns the Hessians if order is Second or Third, else None.
+    pub fn hessians(&self) -> Option<&[Hessian<N>; M]> {
+        match self {
+            Derivatives::Second { hessians, .. } | Derivatives::Third { hessians, .. } => {
+                Some(hessians.as_ref())
+            }
+            Derivatives::First { .. } => None,
+        }
+    }
+
+    /// Returns the third-order tensors if order is Third, else None.
+    pub fn tensors(&self) -> Option<&[ThirdOrderTensor<N>; M]> {
+        match self {
+            Derivatives::Third { tensors, .. } => Some(tensors.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+/// A function \\( f: \mathbb{R}^N \to \mathbb{R}^M \\) written generically
+/// over any [`AutoDiff`] type.
+///
+/// Implementors write the function body once and it works with `Jet1`, `Jet2`,
+/// or `Jet3` — the runtime dispatcher picks which one to seed based on the
+/// requested [`Order`]. Typical impls are zero-sized structs:
+///
+/// ```
+/// use nolan::differentiate::AutoDiffFn;
+/// use nolan::traits::AutoDiff;
+///
+/// struct GravityAccel { mu: f64 }
+/// impl AutoDiffFn<6, 3> for GravityAccel {
+///     fn eval<T: AutoDiff>(&self, xs: [T; 6]) -> [T; 3] {
+///         let [x, y, z, _vx, _vy, _vz] = xs;
+///         let r2 = x * x + y * y + z * z;
+///         let r = r2.sqrt();
+///         let r3_inv = r.powi(-3) * self.mu;
+///         [x * r3_inv, y * r3_inv, z * r3_inv]
+///     }
+/// }
+/// ```
+pub trait AutoDiffFn<const N: usize, const M: usize> {
+    fn eval<T: AutoDiff>(&self, xs: [T; N]) -> [T; M];
+}
+
+/// Runtime-dispatched differentiate. Picks Jet1/Jet2/Jet3 based on `order`.
+///
+/// Prefer [`differentiate_dyn_6`] or [`differentiate_dyn_9`] for the common
+/// state sizes; they inline the hessian and tensor widths so callers only
+/// need to pass the output arity `M`.
+pub fn differentiate_dyn<
+    const N: usize,
+    const H: usize,
+    const T: usize,
+    const M: usize,
+    F: AutoDiffFn<N, M>,
+>(
+    order: Order,
+    x: [f64; N],
+    f: &F,
+) -> Derivatives<N, M> {
+    match order {
+        Order::First => {
+            let seeded = seed_jet1::<N>(x);
+            let ys = f.eval(seeded);
+            let values = std::array::from_fn(|m| ys[m].value);
+            let jacobian = std::array::from_fn(|m| ys[m].extract_grad::<N>());
+            Derivatives::First { values, jacobian }
+        }
+        Order::Second => {
+            let seeded = seed_jet2::<N, H>(x);
+            let ys = f.eval(seeded);
+            let values = std::array::from_fn(|m| ys[m].value);
+            let jacobian = std::array::from_fn(|m| ys[m].extract_grad::<N>());
+            let hessians = Box::new(std::array::from_fn(|m| ys[m].extract_hess::<N>()));
+            Derivatives::Second {
+                values,
+                jacobian,
+                hessians,
+            }
+        }
+        Order::Third => {
+            let seeded = seed_jet3::<N, H, T>(x);
+            let ys = f.eval(seeded);
+            let values = std::array::from_fn(|m| ys[m].value);
+            let jacobian = std::array::from_fn(|m| ys[m].extract_grad::<N>());
+            let hessians = Box::new(std::array::from_fn(|m| ys[m].extract_hess::<N>()));
+            let tensors = Box::new(std::array::from_fn(|m| ys[m].extract_tens::<N>()));
+            Derivatives::Third {
+                values,
+                jacobian,
+                hessians,
+                tensors,
+            }
+        }
+    }
+}
+
+/// [`differentiate_dyn`] specialized for 6 parameters (H = 21, T = 56).
+pub fn differentiate_dyn_6<const M: usize, F: AutoDiffFn<6, M>>(
+    order: Order,
+    x: [f64; 6],
+    f: &F,
+) -> Derivatives<6, M> {
+    differentiate_dyn::<6, 21, 56, M, F>(order, x, f)
+}
+
+/// [`differentiate_dyn`] specialized for 9 parameters (H = 45, T = 165).
+pub fn differentiate_dyn_9<const M: usize, F: AutoDiffFn<9, M>>(
+    order: Order,
+    x: [f64; 9],
+    f: &F,
+) -> Derivatives<9, M> {
+    differentiate_dyn::<9, 45, 165, M, F>(order, x, f)
+}
+
 // ─── Internal seeding helpers ────────────────────────────────────────────
 
 #[inline]
@@ -507,5 +688,162 @@ mod tests {
         // Something that should be zero:
         assert!(close(tens[0][0][0], 0.0));
         assert!(close(tens[0][3][6], 0.0));
+    }
+
+    // ─── Runtime dispatch ─────────────────────────────────────────────
+
+    struct GravityAccel {
+        mu: f64,
+    }
+    impl AutoDiffFn<6, 3> for GravityAccel {
+        fn eval<T: AutoDiff>(&self, xs: [T; 6]) -> [T; 3] {
+            let [x, y, z, _vx, _vy, _vz] = xs;
+            let r2 = x * x + y * y + z * z;
+            let r = r2.sqrt();
+            let r3_inv = r.powi(-3) * self.mu;
+            [x * r3_inv, y * r3_inv, z * r3_inv]
+        }
+    }
+
+    #[test]
+    fn differentiate_dyn_first_matches_flat_api() {
+        let state = [1.0_f64, 0.5, 0.1, 0.0, 0.0, 0.0];
+        let f = GravityAccel { mu: 1.327e11 };
+
+        let d = differentiate_dyn_6(Order::First, state, &f);
+        assert_eq!(d.order(), Order::First);
+        assert!(d.hessians().is_none());
+        assert!(d.tensors().is_none());
+
+        let (flat_values, flat_jac) =
+            differentiate1_vec::<6, 3, _>(state, |xs| f.eval::<Jet1<6>>(xs));
+
+        for m in 0..3 {
+            assert_eq!(d.values()[m], flat_values[m]);
+            for i in 0..6 {
+                assert_eq!(d.jacobian()[m][i], flat_jac[m][i]);
+            }
+        }
+    }
+
+    #[test]
+    fn differentiate_dyn_second_matches_flat_api() {
+        let state = [1.0_f64, 0.5, 0.1, 0.0, 0.0, 0.0];
+        let f = GravityAccel { mu: 1.327e11 };
+
+        let d = differentiate_dyn_6(Order::Second, state, &f);
+        assert_eq!(d.order(), Order::Second);
+        assert!(d.hessians().is_some());
+        assert!(d.tensors().is_none());
+
+        let (flat_values, flat_jac, flat_hess) =
+            differentiate2_vec::<6, 21, 3, _>(state, |xs| f.eval::<Jet2<6, 21>>(xs));
+
+        for m in 0..3 {
+            assert_eq!(d.values()[m], flat_values[m]);
+            for i in 0..6 {
+                assert_eq!(d.jacobian()[m][i], flat_jac[m][i]);
+                for j in 0..6 {
+                    assert_eq!(d.hessians().unwrap()[m][i][j], flat_hess[m][i][j]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn differentiate_dyn_third_matches_flat_api() {
+        let state = [1.0_f64, 0.5, 0.1, 0.0, 0.0, 0.0];
+        let f = GravityAccel { mu: 1.327e11 };
+
+        let d = differentiate_dyn_6(Order::Third, state, &f);
+        assert_eq!(d.order(), Order::Third);
+        assert!(d.hessians().is_some());
+        assert!(d.tensors().is_some());
+
+        let (flat_values, flat_jac, flat_hess, flat_tens) =
+            differentiate3_vec::<6, 21, 56, 3, _>(state, |xs| f.eval::<Jet3<6, 21, 56>>(xs));
+
+        for m in 0..3 {
+            assert_eq!(d.values()[m], flat_values[m]);
+            for i in 0..6 {
+                assert_eq!(d.jacobian()[m][i], flat_jac[m][i]);
+                for j in 0..6 {
+                    assert_eq!(d.hessians().unwrap()[m][i][j], flat_hess[m][i][j]);
+                    for k in 0..6 {
+                        assert_eq!(d.tensors().unwrap()[m][i][j][k], flat_tens[m][i][j][k]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn differentiate_dyn_escalation_scenario() {
+        // Illustrates the use case: decide order at runtime based on a
+        // "nonlinearity diagnostic" (here we fake one with a threshold).
+        // Default is Second; if the diagnostic trips, we escalate to Third.
+        let state = [1.0_f64, 0.5, 0.1, 0.0, 0.0, 0.0];
+        let f = GravityAccel { mu: 1.327e11 };
+
+        let nonlinearity_proxy = 0.42_f64; // pretend we computed this upstream
+
+        let order = if nonlinearity_proxy > 0.3 {
+            Order::Third
+        } else {
+            Order::Second
+        };
+
+        let d = differentiate_dyn_6(order, state, &f);
+        // We can consume uniformly — accessors work regardless of dispatch.
+        assert_eq!(d.values().len(), 3);
+        assert_eq!(d.jacobian().len(), 3);
+        // And we know we got tensors because the diagnostic tripped.
+        assert_eq!(d.order(), Order::Third);
+        let tens = d.tensors().expect("third-order dispatch yields tensors");
+        // Sanity: tensor is populated with real numbers.
+        assert!(
+            tens[0]
+                .iter()
+                .flatten()
+                .any(|row| row.iter().any(|v| *v != 0.0))
+        );
+    }
+
+    #[test]
+    fn differentiate_dyn_9_works() {
+        struct SumSquares;
+        impl AutoDiffFn<9, 1> for SumSquares {
+            fn eval<T: AutoDiff>(&self, xs: [T; 9]) -> [T; 1] {
+                let mut acc = T::constant(0.0);
+                for xi in xs {
+                    acc += xi * xi;
+                }
+                [acc]
+            }
+        }
+        let state = [1.0_f64; 9];
+        let f = SumSquares;
+
+        let d1 = differentiate_dyn_9(Order::First, state, &f);
+        assert_eq!(d1.order(), Order::First);
+        assert!(close(d1.values()[0], 9.0));
+        for i in 0..9 {
+            assert!(close(d1.jacobian()[0][i], 2.0));
+        }
+
+        let d2 = differentiate_dyn_9(Order::Second, state, &f);
+        assert_eq!(d2.order(), Order::Second);
+        assert!(close(d2.hessians().unwrap()[0][0][0], 2.0));
+        assert!(close(d2.hessians().unwrap()[0][0][1], 0.0));
+
+        // Third-order for a quadratic: all tens entries are zero.
+        let d3 = differentiate_dyn_9(Order::Third, state, &f);
+        for i in 0..9 {
+            for j in 0..9 {
+                for k in 0..9 {
+                    assert!(close(d3.tensors().unwrap()[0][i][j][k], 0.0));
+                }
+            }
+        }
     }
 }
