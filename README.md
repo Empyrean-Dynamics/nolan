@@ -140,6 +140,41 @@ The wrapper is essentially overhead-free — the seeding + extraction is in the
 same ballpark as the compute itself (~0.4 ns overhead on a 25 ns Jet1 gravity
 evaluation, see `benchmark_jets.rs`).
 
+### Runtime-dispatched `differentiate_dyn`
+
+When the derivative order must be chosen at runtime — e.g., propagate with
+Jet2 covariance by default, then escalate to Jet3 for skewness diagnostics
+when a nonlinearity metric trips at a close-approach event — use the
+dispatched form:
+
+```rust
+use nolan::differentiate::{
+    differentiate_dyn_6, AutoDiffFn, Order, Derivatives,
+};
+use nolan::traits::AutoDiff;
+
+// Write the function body once; it works for Jet1, Jet2, or Jet3.
+struct MissDistance;
+impl AutoDiffFn<6, 1> for MissDistance {
+    fn eval<T: AutoDiff>(&self, xs: [T; 6]) -> [T; 1] {
+        let [x, y, z, _vx, _vy, _vz] = xs;
+        [(x * x + y * y + z * z).sqrt()]
+    }
+}
+
+let order = if nonlinearity > threshold { Order::Third } else { Order::Second };
+let d = differentiate_dyn_6(order, state, &MissDistance);
+
+// Uniform consumption via accessors; hessians/tensors are Option.
+let jac = d.jacobian();
+if let Some(hess) = d.hessians() { /* use second-order term */ }
+if let Some(tens) = d.tensors() { /* use third-order skewness */ }
+```
+
+The hessian and tensor fields are boxed so the enum stays small regardless
+of dispatched order — `First` dispatch costs only ~7 ns more than the flat
+`differentiate1_vec`.
+
 ## Linear Algebra
 
 Stack-allocated generic matrix operations for any `N`:

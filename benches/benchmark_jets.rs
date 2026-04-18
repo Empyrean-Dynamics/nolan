@@ -546,8 +546,24 @@ fn bench_jet3_9_gravity_pattern(c: &mut Criterion) {
 // or extraction), these show the wrapper overhead.
 
 use nolan::differentiate::{
-    differentiate1, differentiate1_vec, differentiate2_6, differentiate3_6,
+    AutoDiffFn, Order, differentiate_dyn_6, differentiate1, differentiate1_vec, differentiate2_6,
+    differentiate3_6,
 };
+use nolan::traits::AutoDiff;
+
+// Function struct used by the dispatcher benches (works with any Jet order).
+struct GravityAccelBench {
+    mu: f64,
+}
+impl AutoDiffFn<6, 3> for GravityAccelBench {
+    fn eval<T: AutoDiff>(&self, xs: [T; 6]) -> [T; 3] {
+        let [x, y, z, _vx, _vy, _vz] = xs;
+        let r2 = x * x + y * y + z * z;
+        let r = r2.sqrt();
+        let r3_inv = r.powi(-3) * self.mu;
+        [x * r3_inv, y * r3_inv, z * r3_inv]
+    }
+}
 
 fn bench_differentiate1_6_gravity(c: &mut Criterion) {
     let state = [1.0, 0.5, 0.1, 0.0, 0.0, 0.0];
@@ -613,6 +629,59 @@ fn bench_differentiate1_vec_gravity_accel(c: &mut Criterion) {
                     let r3_inv = r.powi(-3) * mu;
                     [x * r3_inv, y * r3_inv, z * r3_inv]
                 },
+            ))
+        })
+    });
+}
+
+// ─── Runtime-dispatched differentiate_dyn_6 ──────────────────────────
+//
+// Compared against the same flat-API bench above, these show whether the
+// enum dispatch + trait indirection add measurable overhead.
+
+fn bench_differentiate_dyn_first_gravity(c: &mut Criterion) {
+    let state = [1.0, 0.5, 0.1, 0.0, 0.0, 0.0];
+    let f = GravityAccelBench { mu: 1.327e11 };
+
+    c.bench_function("differentiate_dyn_6_3_first_gravity", |bench| {
+        bench.iter(|| {
+            let state = black_box(state);
+            black_box(differentiate_dyn_6(
+                black_box(Order::First),
+                state,
+                black_box(&f),
+            ))
+        })
+    });
+}
+
+fn bench_differentiate_dyn_second_gravity(c: &mut Criterion) {
+    let state = [1.0, 0.5, 0.1, 0.0, 0.0, 0.0];
+    let f = GravityAccelBench { mu: 1.327e11 };
+
+    c.bench_function("differentiate_dyn_6_3_second_gravity", |bench| {
+        bench.iter(|| {
+            let state = black_box(state);
+            black_box(differentiate_dyn_6(
+                black_box(Order::Second),
+                state,
+                black_box(&f),
+            ))
+        })
+    });
+}
+
+fn bench_differentiate_dyn_third_gravity(c: &mut Criterion) {
+    let state = [1.0, 0.5, 0.1, 0.0, 0.0, 0.0];
+    let f = GravityAccelBench { mu: 1.327e11 };
+
+    c.bench_function("differentiate_dyn_6_3_third_gravity", |bench| {
+        bench.iter(|| {
+            let state = black_box(state);
+            black_box(differentiate_dyn_6(
+                black_box(Order::Third),
+                state,
+                black_box(&f),
             ))
         })
     });
@@ -686,5 +755,9 @@ criterion_group!(
     bench_differentiate2_6_gravity,
     bench_differentiate3_6_gravity,
     bench_differentiate1_vec_gravity_accel,
+    // runtime-dispatched differentiate_dyn_6
+    bench_differentiate_dyn_first_gravity,
+    bench_differentiate_dyn_second_gravity,
+    bench_differentiate_dyn_third_gravity,
 );
 criterion_main!(benches);
