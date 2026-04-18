@@ -987,3 +987,335 @@ impl<const N: usize, const H: usize, const T: usize> Jet3<N, H, T> {
         (sin_result, cos_result)
     }
 }
+
+#[cfg(test)]
+mod jet3_math_tests {
+    use super::*;
+    use crate::jets::{hess_size, tens_size};
+
+    const TOL: f64 = 1e-10;
+
+    type J3_1 = Jet3<1, { hess_size(1) }, { tens_size(1) }>;
+    type J3_2 = Jet3<2, { hess_size(2) }, { tens_size(2) }>;
+
+    fn assert_close(actual: f64, expected: f64, what: &str) {
+        assert!(
+            (actual - expected).abs() <= TOL * expected.abs().max(1.0),
+            "{}: expected {}, got {} (|diff| = {:e})",
+            what,
+            expected,
+            actual,
+            (actual - expected).abs()
+        );
+    }
+
+    /// Evaluate a unary op on a single-variable Jet3 seeded at `x_val`
+    /// and verify value + grad + hess + tens match the closed-form.
+    fn check_unary(
+        x_val: f64,
+        apply: impl Fn(J3_1) -> J3_1,
+        expected_f: f64,
+        expected_fp: f64,
+        expected_fpp: f64,
+        expected_fppp: f64,
+        name: &str,
+    ) {
+        let x = J3_1::variable(x_val, 0);
+        let f = apply(x);
+        assert_close(f.value, expected_f, &format!("{name}.value"));
+        assert_close(f.grad[0], expected_fp, &format!("{name}.grad"));
+        assert_close(f.hess[0], expected_fpp, &format!("{name}.hess"));
+        assert_close(f.tens[0], expected_fppp, &format!("{name}.tens"));
+    }
+
+    // ─── Trig ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn sin_derivatives() {
+        let a = 0.7;
+        check_unary(a, |x| x.sin(), a.sin(), a.cos(), -a.sin(), -a.cos(), "sin");
+    }
+
+    #[test]
+    fn cos_derivatives() {
+        let a = -0.4;
+        check_unary(a, |x| x.cos(), a.cos(), -a.sin(), -a.cos(), a.sin(), "cos");
+    }
+
+    #[test]
+    fn tan_derivatives() {
+        // tan: f' = sec², f'' = 2 tan sec², f''' = 2 sec² (1 + 3 tan²)
+        let a: f64 = 0.3;
+        let t = a.tan();
+        let sec2 = 1.0 + t * t;
+        check_unary(
+            a,
+            |x| x.tan(),
+            t,
+            sec2,
+            2.0 * t * sec2,
+            2.0 * sec2 * (1.0 + 3.0 * t * t),
+            "tan",
+        );
+    }
+
+    #[test]
+    fn asin_derivatives() {
+        // asin: f' = 1/√(1-x²), f'' = x/(1-x²)^(3/2), f''' = (2x²+1)/(1-x²)^(5/2)
+        let a: f64 = 0.4;
+        let d2 = 1.0 - a * a;
+        let d = d2.sqrt();
+        check_unary(
+            a,
+            |x| x.asin(),
+            a.asin(),
+            1.0 / d,
+            a / (d * d * d),
+            (2.0 * a * a + 1.0) / d.powi(5),
+            "asin",
+        );
+    }
+
+    #[test]
+    fn acos_derivatives() {
+        let a: f64 = 0.4;
+        let d2 = 1.0 - a * a;
+        let d = d2.sqrt();
+        check_unary(
+            a,
+            |x| x.acos(),
+            a.acos(),
+            -1.0 / d,
+            -a / (d * d * d),
+            -(2.0 * a * a + 1.0) / d.powi(5),
+            "acos",
+        );
+    }
+
+    #[test]
+    fn atan_derivatives() {
+        // atan: f' = 1/(1+x²), f'' = -2x/(1+x²)², f''' = (6x²-2)/(1+x²)³
+        let a = 0.7;
+        let d = 1.0 + a * a;
+        check_unary(
+            a,
+            |x| x.atan(),
+            a.atan(),
+            1.0 / d,
+            -2.0 * a / (d * d),
+            (6.0 * a * a - 2.0) / d.powi(3),
+            "atan",
+        );
+    }
+
+    // ─── Hyperbolic ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn sinh_derivatives() {
+        let a = 0.5;
+        check_unary(
+            a,
+            |x| x.sinh(),
+            a.sinh(),
+            a.cosh(),
+            a.sinh(),
+            a.cosh(),
+            "sinh",
+        );
+    }
+
+    #[test]
+    fn cosh_derivatives() {
+        let a = 0.5;
+        check_unary(
+            a,
+            |x| x.cosh(),
+            a.cosh(),
+            a.sinh(),
+            a.cosh(),
+            a.sinh(),
+            "cosh",
+        );
+    }
+
+    #[test]
+    fn tanh_derivatives() {
+        // tanh: f' = sech² = 1-t², f'' = -2t sech², f''' = 2 sech² (3t²-1)
+        let a: f64 = 0.4;
+        let t = a.tanh();
+        let sech2 = 1.0 - t * t;
+        check_unary(
+            a,
+            |x| x.tanh(),
+            t,
+            sech2,
+            -2.0 * t * sech2,
+            2.0 * sech2 * (3.0 * t * t - 1.0),
+            "tanh",
+        );
+    }
+
+    // ─── Exp / Log / Sqrt / Pow ──────────────────────────────────────────────
+
+    #[test]
+    fn exp_derivatives() {
+        let a: f64 = 0.6;
+        let e = a.exp();
+        check_unary(a, |x| x.exp(), e, e, e, e, "exp");
+    }
+
+    #[test]
+    fn ln_derivatives() {
+        // ln: f'=1/x, f''=-1/x², f'''=2/x³
+        let a = 1.7;
+        check_unary(
+            a,
+            |x| x.ln(),
+            a.ln(),
+            1.0 / a,
+            -1.0 / (a * a),
+            2.0 / (a * a * a),
+            "ln",
+        );
+    }
+
+    #[test]
+    fn sqrt_derivatives() {
+        // sqrt: f'=1/(2√x), f''=-1/(4x^(3/2)), f'''=3/(8x^(5/2))
+        let a: f64 = 2.25;
+        let s = a.sqrt();
+        check_unary(
+            a,
+            |x| x.sqrt(),
+            s,
+            0.5 / s,
+            -0.25 / (s * s * s),
+            0.375 / s.powi(5),
+            "sqrt",
+        );
+    }
+
+    #[test]
+    fn powi_derivatives() {
+        // x^4: f'=4x³, f''=12x², f'''=24x
+        let a = 1.5;
+        check_unary(
+            a,
+            |x| x.powi(4),
+            a.powi(4),
+            4.0 * a.powi(3),
+            12.0 * a * a,
+            24.0 * a,
+            "x^4",
+        );
+    }
+
+    #[test]
+    fn powf_derivatives() {
+        // x^2.5: f'=2.5·x^1.5, f''=3.75·x^0.5, f'''=1.875/x^0.5
+        let a = 2.0;
+        check_unary(
+            a,
+            |x| x.powf(2.5),
+            a.powf(2.5),
+            2.5 * a.powf(1.5),
+            3.75 * a.powf(0.5),
+            1.875 / a.powf(0.5),
+            "x^2.5",
+        );
+    }
+
+    #[test]
+    fn abs_positive_branch() {
+        let a = 2.3;
+        check_unary(a, |x| x.abs(), a, 1.0, 0.0, 0.0, "|x| at x>0");
+    }
+
+    #[test]
+    fn abs_negative_branch() {
+        let a = -1.7;
+        check_unary(a, |x| x.abs(), -a, -1.0, 0.0, 0.0, "|x| at x<0");
+    }
+
+    #[test]
+    fn atan2_matches_atan_of_ratio() {
+        // For x > 0, atan2(y, x) = atan(y/x); verify through order 3.
+        let y_val = 0.7;
+        let x_val = 1.3;
+        let y = J3_2::variable(y_val, 0);
+        let x = J3_2::variable(x_val, 1);
+        let f = y.atan2(x);
+        let ref_ = (y / x).atan();
+        assert_close(f.value, ref_.value, "atan2.value");
+        for i in 0..2 {
+            assert_close(f.grad[i], ref_.grad[i], &format!("atan2.grad[{i}]"));
+        }
+        for i in 0..hess_size(2) {
+            assert_close(f.hess[i], ref_.hess[i], &format!("atan2.hess[{i}]"));
+        }
+        for i in 0..tens_size(2) {
+            assert_close(f.tens[i], ref_.tens[i], &format!("atan2.tens[{i}]"));
+        }
+    }
+
+    // ─── Chain rule through Mul composition ──────────────────────────────────
+
+    #[test]
+    fn sin_of_xy_multivariable_chain_rule() {
+        // f(x,y) = sin(xy). With c = cos(xy), s = sin(xy):
+        //   ∂/∂x = c·y      ∂/∂y = c·x
+        //   ∂²/∂x² = -s·y²  ∂²/∂x∂y = -s·xy + c   ∂²/∂y² = -s·x²
+        //   ∂³/∂x³   = -c·y³
+        //   ∂³/∂y∂x² = -c·x·y² - 2s·y
+        //   ∂³/∂y²∂x = -c·x²·y - 2s·x
+        //   ∂³/∂y³   = -c·x³
+        let a = 0.8;
+        let b = 1.1;
+        let x = J3_2::variable(a, 0);
+        let y = J3_2::variable(b, 1);
+        let f = (x * y).sin();
+        let c = (a * b).cos();
+        let s = (a * b).sin();
+
+        assert_close(f.value, (a * b).sin(), "value");
+        assert_close(f.grad[0], c * b, "∂/∂x");
+        assert_close(f.grad[1], c * a, "∂/∂y");
+        assert_close(f.hess[0], -s * b * b, "∂²/∂x²");
+        assert_close(f.hess[1], -s * a * b + c, "∂²/∂x∂y");
+        assert_close(f.hess[2], -s * a * a, "∂²/∂y²");
+        assert_close(f.tens[0], -c * b.powi(3), "∂³/∂x³");
+        assert_close(f.tens[1], -c * a * b * b - 2.0 * s * b, "∂³/∂y∂x²");
+        assert_close(f.tens[2], -c * a * a * b - 2.0 * s * a, "∂³/∂y²∂x");
+        assert_close(f.tens[3], -c * a.powi(3), "∂³/∂y³");
+    }
+
+    #[test]
+    fn gaussian_exp_neg_half_x_squared() {
+        // f(x) = exp(-x²/2): f' = -x·f, f'' = (x²-1)·f, f''' = x(3-x²)·f
+        let a = 0.5;
+        let x = J3_1::variable(a, 0);
+        let f = (-(x * x) * 0.5).exp();
+        let g = (-a * a / 2.0).exp();
+        assert_close(f.value, g, "value");
+        assert_close(f.grad[0], -a * g, "grad");
+        assert_close(f.hess[0], (a * a - 1.0) * g, "hess");
+        assert_close(f.tens[0], a * (3.0 - a * a) * g, "tens");
+    }
+
+    #[test]
+    fn sin_cos_matches_individual_calls() {
+        let a = 0.65;
+        let x = J3_1::variable(a, 0);
+        let (s_pair, c_pair) = x.sin_cos();
+        let s_solo = x.sin();
+        let c_solo = x.cos();
+        assert_close(s_pair.value, s_solo.value, "sin value");
+        assert_close(s_pair.grad[0], s_solo.grad[0], "sin grad");
+        assert_close(s_pair.hess[0], s_solo.hess[0], "sin hess");
+        assert_close(s_pair.tens[0], s_solo.tens[0], "sin tens");
+        assert_close(c_pair.value, c_solo.value, "cos value");
+        assert_close(c_pair.grad[0], c_solo.grad[0], "cos grad");
+        assert_close(c_pair.hess[0], c_solo.hess[0], "cos hess");
+        assert_close(c_pair.tens[0], c_solo.tens[0], "cos tens");
+    }
+}
