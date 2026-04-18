@@ -402,6 +402,143 @@ fn bench_jet3_extract_tens_9(c: &mut Criterion) {
     });
 }
 
+// ─── N=9 op benches (parity across Jet1/Jet2/Jet3 at 9-parameter size) ──
+
+fn bench_jet1_9_add(c: &mut Criterion) {
+    let a = Jet1::<9>::variable(1.5, 0);
+    let b = Jet1::<9>::variable(2.5, 1);
+    c.bench_function("jet1_9_add", |bench| {
+        bench.iter(|| black_box(black_box(a) + black_box(b)))
+    });
+}
+
+fn bench_jet1_9_mul(c: &mut Criterion) {
+    let a = Jet1::<9>::variable(1.5, 0);
+    let b = Jet1::<9>::variable(2.5, 1);
+    c.bench_function("jet1_9_mul", |bench| {
+        bench.iter(|| black_box(black_box(a) * black_box(b)))
+    });
+}
+
+fn bench_jet1_9_sin(c: &mut Criterion) {
+    let a = Jet1::<9>::variable(1.5, 0);
+    c.bench_function("jet1_9_sin", |bench| {
+        bench.iter(|| black_box(black_box(a).sin()))
+    });
+}
+
+fn bench_jet1_9_gravity_pattern(c: &mut Criterion) {
+    let x = Jet1::<9>::variable(1.0, 0);
+    let y = Jet1::<9>::variable(0.5, 1);
+    let z = Jet1::<9>::variable(0.1, 2);
+    let mu = 1.327e11;
+
+    c.bench_function("jet1_9_gravity_accel", |bench| {
+        bench.iter(|| {
+            let x = black_box(x);
+            let y = black_box(y);
+            let z = black_box(z);
+            let r2 = x * x + y * y + z * z;
+            let r = r2.sqrt();
+            let r3_inv = r.powi(-3) * mu;
+            let _ax = x * r3_inv;
+            let _ay = y * r3_inv;
+            let _az = z * r3_inv;
+            black_box((_ax, _ay, _az))
+        })
+    });
+}
+
+fn bench_jet2_9_add(c: &mut Criterion) {
+    let a = Jet2::<9, { hess_size(9) }>::variable(1.5, 0);
+    let b = Jet2::<9, { hess_size(9) }>::variable(2.5, 1);
+    c.bench_function("jet2_9_add", |bench| {
+        bench.iter(|| black_box(black_box(a) + black_box(b)))
+    });
+}
+
+fn bench_jet2_9_mul(c: &mut Criterion) {
+    let a = Jet2::<9, { hess_size(9) }>::variable(1.5, 0);
+    let b = Jet2::<9, { hess_size(9) }>::variable(2.5, 1);
+    c.bench_function("jet2_9_mul", |bench| {
+        bench.iter(|| black_box(black_box(a) * black_box(b)))
+    });
+}
+
+fn bench_jet2_9_sin(c: &mut Criterion) {
+    let a = Jet2::<9, { hess_size(9) }>::variable(1.5, 0);
+    c.bench_function("jet2_9_sin", |bench| {
+        bench.iter(|| black_box(black_box(a).sin()))
+    });
+}
+
+fn bench_jet2_9_gravity_pattern(c: &mut Criterion) {
+    let x = Jet2::<9, { hess_size(9) }>::variable(1.0, 0);
+    let y = Jet2::<9, { hess_size(9) }>::variable(0.5, 1);
+    let z = Jet2::<9, { hess_size(9) }>::variable(0.1, 2);
+    let mu = 1.327e11;
+
+    c.bench_function("jet2_9_gravity_accel", |bench| {
+        bench.iter(|| {
+            let x = black_box(x);
+            let y = black_box(y);
+            let z = black_box(z);
+            let r2 = x * x + y * y + z * z;
+            let r = r2.sqrt();
+            let r3_inv = r.powi(-3) * mu;
+            let _ax = x * r3_inv;
+            let _ay = y * r3_inv;
+            let _az = z * r3_inv;
+            black_box((_ax, _ay, _az))
+        })
+    });
+}
+
+fn bench_jet3_9_add(c: &mut Criterion) {
+    let a = Jet3::<9, { hess_size(9) }, { tens_size(9) }>::variable(1.5, 0);
+    let b = Jet3::<9, { hess_size(9) }, { tens_size(9) }>::variable(2.5, 1);
+    c.bench_function("jet3_9_add", |bench| {
+        bench.iter(|| black_box(black_box(a) + black_box(b)))
+    });
+}
+
+fn bench_jet3_9_mul(c: &mut Criterion) {
+    let a = Jet3::<9, { hess_size(9) }, { tens_size(9) }>::variable(1.5, 0);
+    let b = Jet3::<9, { hess_size(9) }, { tens_size(9) }>::variable(2.5, 1);
+    c.bench_function("jet3_9_mul", |bench| {
+        bench.iter(|| black_box(black_box(a) * black_box(b)))
+    });
+}
+
+fn bench_jet3_9_sin(c: &mut Criterion) {
+    let a = Jet3::<9, { hess_size(9) }, { tens_size(9) }>::variable(1.5, 0);
+    c.bench_function("jet3_9_sin", |bench| {
+        bench.iter(|| black_box(black_box(a).sin()))
+    });
+}
+
+fn bench_jet3_9_gravity_pattern(c: &mut Criterion) {
+    let x = Jet3::<9, { hess_size(9) }, { tens_size(9) }>::variable(1.0, 0);
+    let y = Jet3::<9, { hess_size(9) }, { tens_size(9) }>::variable(0.5, 1);
+    let z = Jet3::<9, { hess_size(9) }, { tens_size(9) }>::variable(0.1, 2);
+    let mu = 1.327e11;
+
+    c.bench_function("jet3_9_gravity_accel", |bench| {
+        bench.iter(|| {
+            let x = black_box(x);
+            let y = black_box(y);
+            let z = black_box(z);
+            let r2 = x * x + y * y + z * z;
+            let r = r2.sqrt();
+            let r3_inv = r.powi(-3) * mu;
+            let _ax = x * r3_inv;
+            let _ay = y * r3_inv;
+            let _az = z * r3_inv;
+            black_box((_ax, _ay, _az))
+        })
+    });
+}
+
 criterion_group!(
     benches,
     // constants
@@ -441,10 +578,23 @@ criterion_group!(
     bench_jet1_atan2,
     bench_jet2_atan2,
     bench_jet3_atan2,
-    // realistic pattern
+    // realistic pattern (N=6)
     bench_jet1_gravity_pattern,
     bench_jet2_gravity_pattern,
     bench_jet3_gravity_pattern,
+    // N=9 ops (9-param: state + non-grav / 1 burn)
+    bench_jet1_9_add,
+    bench_jet2_9_add,
+    bench_jet3_9_add,
+    bench_jet1_9_mul,
+    bench_jet2_9_mul,
+    bench_jet3_9_mul,
+    bench_jet1_9_sin,
+    bench_jet2_9_sin,
+    bench_jet3_9_sin,
+    bench_jet1_9_gravity_pattern,
+    bench_jet2_9_gravity_pattern,
+    bench_jet3_9_gravity_pattern,
     // extraction
     bench_jet1_extract_grad_6,
     bench_jet1_extract_grad_9,
