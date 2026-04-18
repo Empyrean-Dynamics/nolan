@@ -231,4 +231,129 @@ mod tests {
         assert_eq!(tens_size(6), 56);
         assert_eq!(tens_size(9), 165);
     }
+
+    // ─── Jet3 composition test ──────────────────────────────────────────────
+    // End-to-end: multiple variables, nonlinear ops, addition of subexpressions,
+    // full N=3 tensor (10 elements), plus permutation symmetry of tens(i,j,k).
+
+    use crate::traits::ThirdOrder;
+
+    const COMP_TOL: f64 = 1e-10;
+    fn approx(actual: f64, expected: f64, what: &str) {
+        let tol = COMP_TOL * expected.abs().max(1.0);
+        assert!(
+            (actual - expected).abs() <= tol,
+            "{}: expected {}, got {} (|diff| = {:e})",
+            what,
+            expected,
+            actual,
+            (actual - expected).abs()
+        );
+    }
+
+    #[test]
+    fn jet3_composition_sin_xy_plus_exp_z_y2() {
+        // f(x, y, z) = sin(x·y) + exp(z) · y²
+        //
+        // Closed form (with s = sin(xy), c = cos(xy), v = exp(z)):
+        //   ∂/∂x = c·y
+        //   ∂/∂y = c·x + 2vy
+        //   ∂/∂z = v·y²
+        //
+        //   ∂²/∂x²    = -s·y²
+        //   ∂²/∂x∂y  = c − s·xy
+        //   ∂²/∂x∂z  = 0
+        //   ∂²/∂y²    = -s·x² + 2v
+        //   ∂²/∂y∂z  = 2v·y
+        //   ∂²/∂z²    = v·y²
+        //
+        //   ∂³/∂x³      = -c·y³
+        //   ∂³/∂y∂x²   = -c·x·y² - 2s·y
+        //   ∂³/∂y²∂x   = -2s·x - c·x²·y
+        //   ∂³/∂y³      = -c·x³
+        //   ∂³/∂z∂x²   = 0
+        //   ∂³/∂z∂y∂x  = 0
+        //   ∂³/∂z∂y²   = 2v
+        //   ∂³/∂z²∂x   = 0
+        //   ∂³/∂z²∂y   = 2v·y
+        //   ∂³/∂z³      = v·y²
+        type J3 = Jet3<3, { hess_size(3) }, { tens_size(3) }>;
+        let a: f64 = 0.9;
+        let b: f64 = 1.3;
+        let d: f64 = 0.4;
+        let x = J3::variable(a, 0);
+        let y = J3::variable(b, 1);
+        let z = J3::variable(d, 2);
+        let f = (x * y).sin() + z.exp() * (y * y);
+
+        let s = (a * b).sin();
+        let c = (a * b).cos();
+        let v = d.exp();
+
+        approx(f.value, s + v * b * b, "value");
+        approx(f.grad[0], c * b, "∂/∂x");
+        approx(f.grad[1], c * a + 2.0 * v * b, "∂/∂y");
+        approx(f.grad[2], v * b * b, "∂/∂z");
+
+        // hess_idx: (0,0)=0, (1,0)=1, (1,1)=2, (2,0)=3, (2,1)=4, (2,2)=5
+        approx(f.hess[0], -s * b * b, "∂²/∂x²");
+        approx(f.hess[1], c - s * a * b, "∂²/∂x∂y");
+        approx(f.hess[2], -s * a * a + 2.0 * v, "∂²/∂y²");
+        approx(f.hess[3], 0.0, "∂²/∂x∂z");
+        approx(f.hess[4], 2.0 * v * b, "∂²/∂y∂z");
+        approx(f.hess[5], v * b * b, "∂²/∂z²");
+
+        // tens_idx canonical:
+        // (0,0,0)=0, (1,0,0)=1, (1,1,0)=2, (1,1,1)=3,
+        // (2,0,0)=4, (2,1,0)=5, (2,1,1)=6, (2,2,0)=7, (2,2,1)=8, (2,2,2)=9
+        approx(f.tens[0], -c * b.powi(3), "∂³/∂x³");
+        approx(f.tens[1], -c * a * b * b - 2.0 * s * b, "∂³/∂y∂x²");
+        approx(f.tens[2], -2.0 * s * a - c * a * a * b, "∂³/∂y²∂x");
+        approx(f.tens[3], -c * a.powi(3), "∂³/∂y³");
+        approx(f.tens[4], 0.0, "∂³/∂z∂x²");
+        approx(f.tens[5], 0.0, "∂³/∂z∂y∂x");
+        approx(f.tens[6], 2.0 * v, "∂³/∂z∂y²");
+        approx(f.tens[7], 0.0, "∂³/∂z²∂x");
+        approx(f.tens[8], 2.0 * v * b, "∂³/∂z²∂y");
+        approx(f.tens[9], v * b * b, "∂³/∂z³");
+    }
+
+    #[test]
+    fn jet3_tens_accessor_is_fully_symmetric() {
+        // For any composition, ThirdOrder::tens(i, j, k) must return the same value
+        // for all 6 permutations of (i, j, k).
+        type J3 = Jet3<3, { hess_size(3) }, { tens_size(3) }>;
+        let x = J3::variable(0.9, 0);
+        let y = J3::variable(1.3, 1);
+        let z = J3::variable(0.4, 2);
+        let f = (x * y).sin() + z.exp() * (y * y);
+
+        for i in 0..3 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    let v_ijk = f.tens(i, j, k);
+                    assert!(
+                        (v_ijk - f.tens(i, k, j)).abs() < 1e-14,
+                        "tens({i},{j},{k}) != tens({i},{k},{j})"
+                    );
+                    assert!(
+                        (v_ijk - f.tens(j, i, k)).abs() < 1e-14,
+                        "tens({i},{j},{k}) != tens({j},{i},{k})"
+                    );
+                    assert!(
+                        (v_ijk - f.tens(j, k, i)).abs() < 1e-14,
+                        "tens({i},{j},{k}) != tens({j},{k},{i})"
+                    );
+                    assert!(
+                        (v_ijk - f.tens(k, i, j)).abs() < 1e-14,
+                        "tens({i},{j},{k}) != tens({k},{i},{j})"
+                    );
+                    assert!(
+                        (v_ijk - f.tens(k, j, i)).abs() < 1e-14,
+                        "tens({i},{j},{k}) != tens({k},{j},{i})"
+                    );
+                }
+            }
+        }
+    }
 }

@@ -884,3 +884,271 @@ impl<const N: usize, const H: usize, const T: usize> DivAssign<f64> for Jet3<N, 
         *self *= inv;
     }
 }
+
+#[cfg(test)]
+mod jet3_ops_tests {
+    use super::*;
+    use crate::jets::{hess_size, tens_size};
+
+    const TOL: f64 = 1e-12;
+
+    fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
+        (a - b).abs() <= tol
+    }
+
+    fn assert_close(actual: f64, expected: f64, what: &str) {
+        assert!(
+            approx_eq(actual, expected, TOL),
+            "{}: expected {}, got {} (|diff| = {:e})",
+            what,
+            expected,
+            actual,
+            (actual - expected).abs()
+        );
+    }
+
+    // Jet3 with N=2 parameters: H=3, T=4.
+    type J3_2 = Jet3<2, { hess_size(2) }, { tens_size(2) }>;
+    // Jet3 with N=1 parameter: H=1, T=1.
+    type J3_1 = Jet3<1, { hess_size(1) }, { tens_size(1) }>;
+
+    // ─── Add / Sub: linearity — non-grad derivatives pass through unchanged ──
+
+    #[test]
+    fn add_preserves_derivatives() {
+        // f(x, y) = 3*x + 2*y + 7
+        // ∂f/∂x = 3, ∂f/∂y = 2, all higher derivatives = 0.
+        let x = J3_2::variable(1.5, 0);
+        let y = J3_2::variable(-0.3, 1);
+        let f = x * 3.0 + y * 2.0 + 7.0;
+        assert_close(f.value, 3.0 * 1.5 + 2.0 * -0.3 + 7.0, "value");
+        assert_close(f.grad[0], 3.0, "grad[0]");
+        assert_close(f.grad[1], 2.0, "grad[1]");
+        for h in f.hess.iter() {
+            assert_close(*h, 0.0, "hess");
+        }
+        for t in f.tens.iter() {
+            assert_close(*t, 0.0, "tens");
+        }
+    }
+
+    #[test]
+    fn sub_preserves_derivatives() {
+        // f(x, y) = x - y
+        let x = J3_2::variable(2.0, 0);
+        let y = J3_2::variable(0.5, 1);
+        let f = x - y;
+        assert_close(f.value, 1.5, "value");
+        assert_close(f.grad[0], 1.0, "grad[0]");
+        assert_close(f.grad[1], -1.0, "grad[1]");
+        for h in f.hess.iter() {
+            assert_close(*h, 0.0, "hess");
+        }
+        for t in f.tens.iter() {
+            assert_close(*t, 0.0, "tens");
+        }
+    }
+
+    // ─── Mul: Leibniz product rule through order 3 ──────────────────────────
+
+    #[test]
+    fn mul_xy_zero_third_derivative() {
+        // f(x, y) = x*y
+        // ∂f/∂x = y, ∂f/∂y = x
+        // ∂²f/∂x∂y = 1, diagonal Hessians = 0
+        // All third derivatives = 0
+        let a = 1.7;
+        let b = -2.3;
+        let x = J3_2::variable(a, 0);
+        let y = J3_2::variable(b, 1);
+        let f = x * y;
+
+        assert_close(f.value, a * b, "value");
+        assert_close(f.grad[0], b, "∂(xy)/∂x = y");
+        assert_close(f.grad[1], a, "∂(xy)/∂y = x");
+
+        // hess_idx: (0,0)=0, (1,0)=1, (1,1)=2
+        assert_close(f.hess[0], 0.0, "∂²(xy)/∂x² = 0");
+        assert_close(f.hess[1], 1.0, "∂²(xy)/∂x∂y = 1");
+        assert_close(f.hess[2], 0.0, "∂²(xy)/∂y² = 0");
+
+        for (idx, t) in f.tens.iter().enumerate() {
+            assert_close(*t, 0.0, &format!("tens[{idx}] of xy"));
+        }
+    }
+
+    #[test]
+    fn mul_x2y_nonzero_third_derivative() {
+        // f(x, y) = x² * y computed as (x*x)*y
+        // ∂f/∂x = 2xy, ∂f/∂y = x²
+        // ∂²f/∂x² = 2y, ∂²f/∂x∂y = 2x, ∂²f/∂y² = 0
+        // ∂³f/∂x³ = 0, ∂³f/∂x²∂y = 2, ∂³f/∂x∂y² = 0, ∂³f/∂y³ = 0
+        let a = 1.3;
+        let b = 0.7;
+        let x = J3_2::variable(a, 0);
+        let y = J3_2::variable(b, 1);
+        let f = (x * x) * y;
+
+        assert_close(f.value, a * a * b, "value");
+        assert_close(f.grad[0], 2.0 * a * b, "∂(x²y)/∂x");
+        assert_close(f.grad[1], a * a, "∂(x²y)/∂y");
+
+        assert_close(f.hess[0], 2.0 * b, "∂²(x²y)/∂x²");
+        assert_close(f.hess[1], 2.0 * a, "∂²(x²y)/∂x∂y");
+        assert_close(f.hess[2], 0.0, "∂²(x²y)/∂y²");
+
+        // tens_idx canonical i≥j≥k
+        // (0,0,0) → 0: ∂³/∂x³
+        assert_close(f.tens[0], 0.0, "∂³(x²y)/∂x³");
+        // (1,0,0) → 1: ∂³/∂y∂x²
+        assert_close(f.tens[1], 2.0, "∂³(x²y)/∂y∂x² = 2");
+        // (1,1,0) → 2: ∂³/∂y²∂x
+        assert_close(f.tens[2], 0.0, "∂³(x²y)/∂y²∂x");
+        // (1,1,1) → 3: ∂³/∂y³
+        assert_close(f.tens[3], 0.0, "∂³(x²y)/∂y³");
+    }
+
+    #[test]
+    fn mul_x_cubed_third_derivative_is_six() {
+        // f(x) = x*x*x = x³
+        // ∂³f/∂x³ = 6
+        let a = 2.5;
+        let x = J3_1::variable(a, 0);
+        let f = x * x * x;
+
+        assert_close(f.value, a.powi(3), "value");
+        assert_close(f.grad[0], 3.0 * a * a, "∂x³/∂x = 3x²");
+        assert_close(f.hess[0], 6.0 * a, "∂²x³/∂x² = 6x");
+        assert_close(f.tens[0], 6.0, "∂³x³/∂x³ = 6");
+    }
+
+    // ─── Div: quotient rule through order 3 ─────────────────────────────────
+
+    #[test]
+    fn div_x_over_y() {
+        // f(x, y) = x / y
+        // ∂f/∂x = 1/y, ∂f/∂y = -x/y²
+        // ∂²f/∂x² = 0, ∂²f/∂x∂y = -1/y², ∂²f/∂y² = 2x/y³
+        // ∂³f/∂x³ = 0, ∂³f/∂y∂x² = 0, ∂³f/∂y²∂x = 2/y³, ∂³f/∂y³ = -6x/y⁴
+        let a = 3.0;
+        let b = 2.0;
+        let x = J3_2::variable(a, 0);
+        let y = J3_2::variable(b, 1);
+        let f = x / y;
+
+        assert_close(f.value, a / b, "value");
+        assert_close(f.grad[0], 1.0 / b, "∂(x/y)/∂x");
+        assert_close(f.grad[1], -a / (b * b), "∂(x/y)/∂y");
+
+        assert_close(f.hess[0], 0.0, "∂²(x/y)/∂x²");
+        assert_close(f.hess[1], -1.0 / (b * b), "∂²(x/y)/∂x∂y");
+        assert_close(f.hess[2], 2.0 * a / b.powi(3), "∂²(x/y)/∂y²");
+
+        assert_close(f.tens[0], 0.0, "∂³(x/y)/∂x³");
+        assert_close(f.tens[1], 0.0, "∂³(x/y)/∂y∂x²");
+        assert_close(f.tens[2], 2.0 / b.powi(3), "∂³(x/y)/∂y²∂x");
+        assert_close(f.tens[3], -6.0 * a / b.powi(4), "∂³(x/y)/∂y³");
+    }
+
+    #[test]
+    fn div_one_over_x() {
+        // f(x) = 1/x = constant(1)/x
+        // ∂f/∂x = -1/x², ∂²f/∂x² = 2/x³, ∂³f/∂x³ = -6/x⁴
+        let a = 1.25;
+        let one = J3_1::constant(1.0);
+        let x = J3_1::variable(a, 0);
+        let f = one / x;
+
+        assert_close(f.value, 1.0 / a, "value");
+        assert_close(f.grad[0], -1.0 / (a * a), "∂(1/x)/∂x");
+        assert_close(f.hess[0], 2.0 / a.powi(3), "∂²(1/x)/∂x²");
+        assert_close(f.tens[0], -6.0 / a.powi(4), "∂³(1/x)/∂x³");
+    }
+
+    // ─── Neg ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn neg_flips_all_derivatives() {
+        // f(x) = -(x*x*x) = -x³. ∂³f/∂x³ = -6.
+        let a = 1.5;
+        let x = J3_1::variable(a, 0);
+        let f = -(x * x * x);
+
+        assert_close(f.value, -a.powi(3), "value");
+        assert_close(f.grad[0], -3.0 * a * a, "grad");
+        assert_close(f.hess[0], -6.0 * a, "hess");
+        assert_close(f.tens[0], -6.0, "tens");
+    }
+
+    // ─── Mixed f64 arithmetic ────────────────────────────────────────────────
+
+    #[test]
+    fn add_f64_preserves_derivatives() {
+        // f(x) = x + 5 as Jet3 + f64. Derivatives unchanged from x.
+        let a = 0.7;
+        let x = J3_1::variable(a, 0);
+        let f = x + 5.0;
+        assert_close(f.value, a + 5.0, "value");
+        assert_close(f.grad[0], 1.0, "grad");
+        assert_close(f.hess[0], 0.0, "hess");
+        assert_close(f.tens[0], 0.0, "tens");
+    }
+
+    #[test]
+    fn mul_by_f64_scales_all_derivatives() {
+        // f(x) = 3 * x*x*x. ∂³f/∂x³ = 18.
+        let a = 1.1;
+        let x = J3_1::variable(a, 0);
+        let f = (x * x * x) * 3.0;
+        assert_close(f.value, 3.0 * a.powi(3), "value");
+        assert_close(f.grad[0], 9.0 * a * a, "grad");
+        assert_close(f.hess[0], 18.0 * a, "hess");
+        assert_close(f.tens[0], 18.0, "tens");
+    }
+
+    #[test]
+    fn div_by_f64_scales_all_derivatives() {
+        // f(x) = (x*x*x) / 2. ∂³f/∂x³ = 3.
+        let a = 2.0;
+        let x = J3_1::variable(a, 0);
+        let f = (x * x * x) / 2.0;
+        assert_close(f.value, a.powi(3) / 2.0, "value");
+        assert_close(f.grad[0], 3.0 * a * a / 2.0, "grad");
+        assert_close(f.hess[0], 6.0 * a / 2.0, "hess");
+        assert_close(f.tens[0], 6.0 / 2.0, "tens");
+    }
+
+    #[test]
+    fn f64_div_jet_matches_closed_form() {
+        // f(x) = 2 / x. Using f64 / Jet3.
+        // ∂f/∂x = -2/x², ∂²/∂x² = 4/x³, ∂³/∂x³ = -12/x⁴.
+        let a = 1.5;
+        let x = J3_1::variable(a, 0);
+        let f = 2.0 / x;
+        assert_close(f.value, 2.0 / a, "value");
+        assert_close(f.grad[0], -2.0 / (a * a), "grad");
+        assert_close(f.hess[0], 4.0 / a.powi(3), "hess");
+        assert_close(f.tens[0], -12.0 / a.powi(4), "tens");
+    }
+
+    // ─── AddAssign / SubAssign / MulAssign / DivAssign by f64 ────────────────
+
+    #[test]
+    fn assign_ops_match_non_assign() {
+        let a = 1.7;
+        let mut f = J3_1::variable(a, 0);
+        f = f * f * f; // x³
+        f += 1.0;
+        f *= 2.0;
+        f -= 3.0;
+        f /= 4.0;
+        // f(x) = (2(x³ + 1) - 3) / 4 = (2x³ - 1) / 4
+        // ∂/∂x = 6x² / 4 = 3x²/2
+        // ∂²/∂x² = 12x / 4 = 3x
+        // ∂³/∂x³ = 12 / 4 = 3
+        assert_close(f.value, (2.0 * a.powi(3) - 1.0) / 4.0, "value");
+        assert_close(f.grad[0], 1.5 * a * a, "grad");
+        assert_close(f.hess[0], 3.0 * a, "hess");
+        assert_close(f.tens[0], 3.0, "tens");
+    }
+}

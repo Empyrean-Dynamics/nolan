@@ -75,13 +75,18 @@ pub trait HigherOrder: SecondOrder {
 /// Third-order derivative access.
 ///
 /// Provides access to \\( \partial^3 f / \partial p_i \partial p_j \partial p_k \\).
+/// The stored tensor is fully symmetric under any permutation of
+/// \\( (i, j, k) \\); the accessor canonicalizes indices internally.
 pub trait ThirdOrder: SecondOrder {
     /// Third derivative with respect to parameters \\( p_i, p_j, p_k \\).
+    /// Accepts any index order; the tensor is symmetric.
     fn tens(&self, i: usize, j: usize, k: usize) -> f64;
-    /// Mutable third derivative.
+    /// Mutable third derivative. Accepts any index order.
     fn tens_mut(&mut self, i: usize, j: usize, k: usize) -> &mut f64;
 
     /// Extract the full third-order tensor as a symmetric \\( M \times M \times M \\) array.
+    ///
+    /// The returned tensor has all 6 permutations of every \\( (i, j, k) \\) populated.
     fn extract_tens<const M: usize>(&self) -> [[[f64; M]; M]; M] {
         let mut t = [[[0.0; M]; M]; M];
         for i in 0..M {
