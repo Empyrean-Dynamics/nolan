@@ -225,12 +225,28 @@ impl NLLSProblem<6> for MyProblem {
     fn evaluate(&mut self, x: &[f64; 6]) -> NLLSEvaluation<6> {
         // Propagate, compute residuals, extract Jacobian
     }
+
+    // Optional: clamp each GN / LM step before it is applied. Useful
+    // when the linear model overshoots its region of validity — e.g.,
+    // orbit determination with rough seeds where a single unconstrained
+    // step propagates to absurd epochs. Default impl is a no-op.
+    fn constrain_step(&mut self, x: &[f64; 6], delta: &mut [f64; 6]) {
+        let r_mag = (x[0].powi(2) + x[1].powi(2) + x[2].powi(2)).sqrt();
+        let dr = (delta[0].powi(2) + delta[1].powi(2) + delta[2].powi(2)).sqrt();
+        let max_dr = 0.5 * r_mag.max(1e-5);
+        if dr > max_dr {
+            let s = max_dr / dr;
+            for k in 0..3 { delta[k] *= s; }
+        }
+        // ...and similarly for the velocity subvector.
+    }
 }
 let solution = solve(&mut problem, x0, &config, prior)?;
 ```
 
 Features: LM adaptive damping, Bayesian prior augmentation, second-order
-Hessian correction (`solve2`), formal covariance extraction.
+Hessian correction (`solve2`), formal covariance extraction, optional
+problem-driven step bounds.
 
 ## Version
 
