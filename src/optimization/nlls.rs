@@ -44,6 +44,66 @@ pub struct NLLSEvaluation2<const N: usize> {
 pub trait NLLSProblem<const N: usize> {
     /// Evaluate residuals and Jacobian at the given parameter values.
     fn evaluate(&mut self, x: &[f64; N]) -> NLLSEvaluation<N>;
+
+    /// Apply problem-specific bounds to a proposed step \\(\Delta x\\)
+    /// at the current iterate \\(\mathbf{x}\\).
+    ///
+    /// The solver calls this after computing the Gauss-Newton /
+    /// Levenberg-Marquardt update and *before* applying it to
+    /// \\(\mathbf{x}\\), giving the problem a chance to clamp step
+    /// magnitudes when the linear model overshoots the region of
+    /// validity (highly nonlinear residuals, Jacobians that collapse to
+    /// zero far from the minimum, physically meaningful bounds on state
+    /// components, etc.).
+    ///
+    /// The default implementation is a no-op — existing consumers are
+    /// unaffected. Convergence checks run on the clamped step, so
+    /// `constrain_step` interacts naturally with `step_tolerance`: a
+    /// clamped step below the tolerance still declares convergence.
+    ///
+    /// LM's \\(\lambda\\) damping already limits step size, but only in
+    /// proportion to \\(J^T J\\). When \\(J\\) itself is poorly scaled
+    /// or near-zero (common in orbit determination with rough initial
+    /// seeds), \\(\lambda\\) adaptation cannot recover. `constrain_step`
+    /// provides an orthogonal, problem-driven bound.
+    ///
+    /// # Example: fractional bounds on position and velocity sub-steps
+    ///
+    /// For orbit determination with state \\([\mathbf{r}, \mathbf{v}]\\),
+    /// bound each sub-step to at most half its current sub-magnitude:
+    ///
+    /// ```
+    /// use nolan::optimization::{NLLSProblem, NLLSEvaluation};
+    ///
+    /// struct OdProblem;
+    /// impl NLLSProblem<6> for OdProblem {
+    ///     fn evaluate(&mut self, _x: &[f64; 6]) -> NLLSEvaluation<6> {
+    ///         # NLLSEvaluation { residuals: vec![0.0], jacobian: vec![[0.0; 6]], cost: 0.0 }
+    ///     }
+    ///
+    ///     fn constrain_step(&mut self, x: &[f64; 6], delta: &mut [f64; 6]) {
+    ///         let r_mag = (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
+    ///         let v_mag = (x[3] * x[3] + x[4] * x[4] + x[5] * x[5]).sqrt();
+    ///         let dr = (delta[0] * delta[0]
+    ///                 + delta[1] * delta[1]
+    ///                 + delta[2] * delta[2]).sqrt();
+    ///         let dv = (delta[3] * delta[3]
+    ///                 + delta[4] * delta[4]
+    ///                 + delta[5] * delta[5]).sqrt();
+    ///         let max_dr = 0.5 * r_mag.max(1e-5);  // floor ~1500 km at 1 AU
+    ///         let max_dv = 0.5 * v_mag.max(1e-6);
+    ///         if dr > max_dr {
+    ///             let s = max_dr / dr;
+    ///             for k in 0..3 { delta[k] *= s; }
+    ///         }
+    ///         if dv > max_dv {
+    ///             let s = max_dv / dv;
+    ///             for k in 3..6 { delta[k] *= s; }
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    fn constrain_step(&mut self, _x: &[f64; N], _delta: &mut [f64; N]) {}
 }
 
 /// Second-order problem (provides Hessians for full Newton correction).
@@ -210,7 +270,7 @@ pub fn solve<const N: usize>(
         }
 
         // Solve for update
-        let delta_x = match mat_solve(&solve_normal, &solve_rhs) {
+        let mut delta_x = match mat_solve(&solve_normal, &solve_rhs) {
             Some(dx) => dx,
             None => {
                 reason = ConvergenceReason::SingularMatrix;
@@ -218,6 +278,9 @@ pub fn solve<const N: usize>(
                 break;
             }
         };
+
+        // Problem-driven step bounds (default no-op).
+        problem.constrain_step(&x, &mut delta_x);
 
         // Convergence check (use undamped normal for scale)
         let step_norm = mat_quadratic_form(&delta_x, &undamped_normal);
@@ -330,7 +393,7 @@ pub fn solve2<const N: usize>(
             }
         }
 
-        let delta_x = match mat_solve(&solve_normal, &solve_rhs) {
+        let mut delta_x = match mat_solve(&solve_normal, &solve_rhs) {
             Some(dx) => dx,
             None => {
                 reason = ConvergenceReason::SingularMatrix;
@@ -338,6 +401,9 @@ pub fn solve2<const N: usize>(
                 break;
             }
         };
+
+        // Problem-driven step bounds (default no-op).
+        problem.constrain_step(&x, &mut delta_x);
 
         let step_norm = mat_quadratic_form(&delta_x, &undamped_normal);
         if step_norm < config.step_tolerance {
@@ -707,6 +773,119 @@ mod tests {
         .unwrap();
 
         assert!((sol.covariance[0][0] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_constrain_step_bounds_overshoot() {
+        // Residual r(x) = ln(1 + (x - 5)²) with minimum at x = 5.
+        //
+        // Far from the minimum the residual grows only logarithmically
+        // while the Jacobian J = 2(x-5)/(1 + (x-5)²) decays as 1/|x-5|,
+        // so pure Gauss-Newton projects Δx = -r/J ≈ -(x-5) · ln(·)/2,
+        // overshooting by orders of magnitude. LM's λ adaptation cannot
+        // recover because damping is scaled by J² ≈ 1/|x-5|² — also
+        // tiny — so each overshot step lands in an equally poor linear
+        // regime and the cost grows across iterations.
+        //
+        // This is the pattern that motivated scott's hand-rolled step
+        // bounds on r and v subvectors during orbit determination.
+        let eval = |x: &[f64; 1]| {
+            let d = x[0] - 5.0;
+            let r = (1.0 + d * d).ln();
+            let j = 2.0 * d / (1.0 + d * d);
+            NLLSEvaluation {
+                residuals: vec![r],
+                jacobian: vec![[j]],
+                cost: r * r,
+            }
+        };
+        let config = NLLSConfig {
+            max_iterations: 20,
+            step_tolerance: 1e-12,
+            method: NLLSMethod::LevenbergMarquardt {
+                lambda_initial: 0.0,
+            },
+        };
+
+        // Unconstrained LM from x = 100 thrashes between ever-larger |x|;
+        // cost is bounded below by the first-iteration value and grows
+        // monotonically past it.
+        let sol_free = solve_nlls(eval, [100.0], &config, None).unwrap();
+        let initial_cost = {
+            let d = 100.0_f64 - 5.0;
+            let r = (1.0 + d * d).ln();
+            r * r
+        };
+        assert!(
+            sol_free.cost > initial_cost,
+            "unconstrained LM did not overshoot: cost={} vs initial={}",
+            sol_free.cost,
+            initial_cost,
+        );
+        assert!(
+            (sol_free.x[0] - 5.0).abs() > 100.0,
+            "unconstrained LM unexpectedly stayed near minimum: x={}",
+            sol_free.x[0],
+        );
+
+        // Clamp |Δx| to at most half of |x| (same pattern as scott's OD
+        // loop, using iterate magnitude rather than distance to the
+        // unknown minimum). Converges toward x = 5 in a handful of steps.
+        struct Clamped;
+        impl NLLSProblem<1> for Clamped {
+            fn evaluate(&mut self, x: &[f64; 1]) -> NLLSEvaluation<1> {
+                let d = x[0] - 5.0;
+                let r = (1.0 + d * d).ln();
+                let j = 2.0 * d / (1.0 + d * d);
+                NLLSEvaluation {
+                    residuals: vec![r],
+                    jacobian: vec![[j]],
+                    cost: r * r,
+                }
+            }
+            fn constrain_step(&mut self, x: &[f64; 1], delta: &mut [f64; 1]) {
+                let max_step = 0.5 * x[0].abs().max(0.1);
+                if delta[0].abs() > max_step {
+                    delta[0] *= max_step / delta[0].abs();
+                }
+            }
+        }
+        let sol_bound = solve(&mut Clamped, [100.0], &config, None).unwrap();
+        assert!(
+            sol_bound.converged,
+            "bounded LM failed: x={}, cost={}, reason={:?}",
+            sol_bound.x[0], sol_bound.cost, sol_bound.reason,
+        );
+        assert!(
+            (sol_bound.x[0] - 5.0).abs() < 1e-3,
+            "bounded LM did not reach minimum: x={}",
+            sol_bound.x[0],
+        );
+    }
+
+    #[test]
+    fn test_constrain_step_default_is_noop() {
+        // Default trait impl on NLLSProblem must leave existing behavior
+        // unchanged. The closure-based ClosureProblem picks up the
+        // default constrain_step, so this test exercises the same code
+        // path as test_linear_system. Regression guard.
+        let sol = solve_nlls(
+            |x: &[f64; 2]| NLLSEvaluation {
+                residuals: vec![x[0] - 3.0, x[1] - 7.0],
+                jacobian: vec![[1.0, 0.0], [0.0, 1.0]],
+                cost: (x[0] - 3.0).powi(2) + (x[1] - 7.0).powi(2),
+            },
+            [0.0; 2],
+            &NLLSConfig {
+                method: NLLSMethod::GaussNewton,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert!(sol.converged);
+        assert!((sol.x[0] - 3.0).abs() < 1e-10);
+        assert!((sol.x[1] - 7.0).abs() < 1e-10);
     }
 
     #[test]
