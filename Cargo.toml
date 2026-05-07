@@ -6,7 +6,8 @@ rust-version = "1.90.0"
 authors = ["Joachim Moeyens <joachim@empyrean-dynamics.com>", "Empyrean Dynamics"]
 description = "Const-generic hyperdual numbers for automatic differentiation"
 repository = "https://github.com/Empyrean-Dynamics/nolan"
-include = ["src/**/*", "Cargo.toml", "docs/katex-header.html"]
+license = "BSD-3-Clause"
+include = ["src/**/*", "Cargo.toml", "LICENSE", "README.md", "docs/katex-header.html"]
 
 [lib]
 name = "nolan"
