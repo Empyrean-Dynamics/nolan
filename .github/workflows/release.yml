@@ -39,3 +39,26 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+
+      # ── Cross-repo: trigger validation suite ─────────────────────
+      # Tag pushes are the moment this repo commits to "this is the
+      # version downstream consumers (empyrean-core's pin, then the
+      # four distribution channels) will adopt." Fire the validation
+      # workflow in empyrean-validation so the new tag is exercised
+      # against the cross-channel suite before downstream bumps the
+      # pin.
+      #
+      # Pre-tag main pushes do NOT dispatch — see the validation
+      # workflow's "Cross-repo dispatch" doc block.
+      #
+      # Requires `VALIDATION_DISPATCH_TOKEN` — a fine-grained PAT
+      # scoped to the empyrean-validation repo only with
+      # `actions: write`.
+      - name: Dispatch sibling-tag-push to empyrean-validation
+        env:
+          GH_TOKEN: ${{ secrets.VALIDATION_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/Empyrean-Dynamics/empyrean-validation/dispatches \
+            -f event_type=sibling-tag-push \
+            -f "client_payload[source]=${{ github.repository }}" \
+            -f "client_payload[tag]=${{ github.ref_name }}"
