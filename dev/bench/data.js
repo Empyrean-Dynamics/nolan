@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778351169944,
+  "lastUpdate": 1778681414286,
   "repoUrl": "https://github.com/Empyrean-Dynamics/nolan",
   "entries": {
     "Nolan Benchmarks": [
@@ -6179,6 +6179,642 @@ window.BENCHMARK_DATA = {
             "name": "mat_solve_9_f64",
             "value": 1004,
             "range": "± 24",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "moeyensj@gmail.com",
+            "name": "Joachim Moeyens",
+            "username": "moeyensj"
+          },
+          "committer": {
+            "email": "moeyensj@users.noreply.github.com",
+            "name": "Joachim Moeyens",
+            "username": "moeyensj"
+          },
+          "distinct": true,
+          "id": "df946fd4c6533512be8ba7d7047d2e8de193eecc",
+          "message": "Add Criterion benches for v1.6.0 linalg / statistics / grids / angles primitives\n\nExtends benchmark_linalg.rs and adds a new benchmark_statistics.rs to\ncover the new APIs landed in this PR. The bench shapes mirror the\nhot-path call sites in villeneuve / scott so future regressions on\nper-observation cost are caught by `cargo bench`:\n\nbenchmark_linalg.rs (4 new groups):\n\n- rectangular: mat_transpose<2,6>, mat_mul<2,2,6>, mat_mul<6,2,6>,\n  mat_ata<2,6>, mat_vec_mul<2> — the exact shapes the OD per-obs\n  H^T W H accumulator hits inside iod/refinement, od::accumulate_obs,\n  systematic_ranging, planning::project_along_cross.\n- scalar_summaries: mat_det<6>, mat_trace_cube<6>, mat_frobenius<6,6>,\n  mat_largest_singular_value<6>, condition_number<6>.\n- eigen: sym_eigenvalues_3 (sky-plane / position-only cov projection)\n  and mat_symmetric_eigen<6> (full Cartesian state cov).\n- regularize: nearest_psd<6> and tikhonov_with_report<6> on a\n  near-singular covariance (the realistic input for these helpers).\n\nbenchmark_statistics.rs (new, 5 groups):\n\n- sample_statistics<6> on a 50-point cloud.\n- sigma_points<6>.\n- split_gaussian<6> at k=3 and k=5.\n- linspace_64, logspace_64, linear_clamped on a 64-knot table.\n- wrap_pi / wrap_2pi / wrap_180 / wrap_360 — batched over 64 inputs\n  per iter to amortize criterion's measurement overhead.\n\nSmoke-checked locally: mat_mul_2x2x6 ~ 4.3 ns, sigma_points_6 ~ 106 ns\non the development machine.\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-05-13T06:47:04-07:00",
+          "tree_id": "6c25ec535bd318b30ccadec34f6ed60c2f56f70d",
+          "url": "https://github.com/Empyrean-Dynamics/nolan/commit/df946fd4c6533512be8ba7d7047d2e8de193eecc"
+        },
+        "date": 1778681412472,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "jet1_6_constant",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_constant",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_constant",
+            "value": 59,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_variable",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_variable",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_variable",
+            "value": 57,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_add",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_add",
+            "value": 38,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_add",
+            "value": 182,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul",
+            "value": 66,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul",
+            "value": 358,
+            "range": "± 29",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_div",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_div",
+            "value": 84,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_div",
+            "value": 409,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul_scalar",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul_scalar",
+            "value": 30,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul_scalar",
+            "value": 122,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sin",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sin",
+            "value": 58,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sin",
+            "value": 257,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_cos",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_cos",
+            "value": 58,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_cos",
+            "value": 251,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sqrt",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sqrt",
+            "value": 48,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sqrt",
+            "value": 250,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_powi_3",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_powi_3",
+            "value": 50,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_powi_3",
+            "value": 245,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_atan2",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_atan2",
+            "value": 106,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_atan2",
+            "value": 725,
+            "range": "± 23",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_gravity_accel",
+            "value": 46,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_gravity_accel",
+            "value": 275,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_gravity_accel",
+            "value": 2182,
+            "range": "± 80",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_add",
+            "value": 14,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_add",
+            "value": 76,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_add",
+            "value": 870,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_mul",
+            "value": 14,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_mul",
+            "value": 146,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_mul",
+            "value": 1306,
+            "range": "± 28",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_sin",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_sin",
+            "value": 115,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_sin",
+            "value": 972,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_gravity_accel",
+            "value": 67,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_gravity_accel",
+            "value": 858,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_gravity_accel",
+            "value": 5762,
+            "range": "± 763",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_extract_grad",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_extract_grad",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_extract_hess",
+            "value": 45,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_extract_hess",
+            "value": 116,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_extract_tens",
+            "value": 506,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_extract_tens",
+            "value": 1783,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_gravity_magnitude",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate2_6_gravity_magnitude",
+            "value": 226,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate3_6_gravity_magnitude",
+            "value": 1767,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_3_gravity_accel",
+            "value": 47,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_first_gravity",
+            "value": 55,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_second_gravity",
+            "value": 280,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_third_gravity",
+            "value": 2627,
+            "range": "± 39",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_f64",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_f64",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_f64",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_jet1_6",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_jet1_6",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_jet1_6",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_f64",
+            "value": 127,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_f64",
+            "value": 176,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_jet1_6",
+            "value": 903,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_jet1_6",
+            "value": 1320,
+            "range": "± 62",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_f64",
+            "value": 314,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_f64",
+            "value": 502,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_jet1_9",
+            "value": 3338,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_jet1_9",
+            "value": 5666,
+            "range": "± 123",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_6_f64",
+            "value": 438,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_9_f64",
+            "value": 1030,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_transpose_2x6",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_2x2x6",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_6x2x6",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_ata_2x6",
+            "value": 19,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_vec_mul_2",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_det_6",
+            "value": 93,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_trace_cube_6",
+            "value": 242,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_frobenius_6x6",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_largest_singular_value_6",
+            "value": 3177,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "condition_number_6",
+            "value": 13482,
+            "range": "± 321",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sym_eigenvalues_3",
+            "value": 71,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_symmetric_eigen_6",
+            "value": 1972,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nearest_psd_6",
+            "value": 2053,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "tikhonov_with_report_6",
+            "value": 11986,
+            "range": "± 333",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sample_statistics_6_n50",
+            "value": 399,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sigma_points_6",
+            "value": 168,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k3",
+            "value": 147,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k5",
+            "value": 229,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linspace_64",
+            "value": 116,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "logspace_64",
+            "value": 491,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linear_clamped_64",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_pi_x64",
+            "value": 412,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_2pi_x64",
+            "value": 389,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_180_x64",
+            "value": 245,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_360_x64",
+            "value": 235,
+            "range": "± 9",
             "unit": "ns/iter"
           }
         ]
