@@ -41,13 +41,14 @@ pub mod generic;
 pub mod mat3;
 pub mod mat6;
 pub mod mat9;
+pub mod regularize;
 pub mod vec3;
 
 pub use generic::{
-    mahalanobis_distance_squared, mahalanobis_distance_squared_with_inv, mat_ata, mat_cholesky,
-    mat_det, mat_eigenvector_max, mat_frobenius, mat_inv, mat_largest_singular_value, mat_log_det,
-    mat_mul, mat_quadratic_form, mat_solve, mat_symmetric_eigen, mat_symmetrize, mat_trace,
-    mat_trace_cube, mat_trace_product, mat_transpose, mat_vec_mul, vec_norm,
+    condition_number, mahalanobis_distance_squared, mahalanobis_distance_squared_with_inv, mat_ata,
+    mat_cholesky, mat_det, mat_eigenvector_max, mat_frobenius, mat_inv, mat_largest_singular_value,
+    mat_log_det, mat_mul, mat_quadratic_form, mat_solve, mat_symmetric_eigen, mat_symmetrize,
+    mat_trace, mat_trace_cube, mat_trace_product, mat_transpose, mat_vec_mul, vec_norm,
 };
 pub use mat3::{
     mat3_det, mat3_inv, mat3_mul, mat3_solve, mat3_transpose, mat3_transpose_vec_mul, mat3_vec_mul,
@@ -58,5 +59,9 @@ pub use mat6::{
 };
 pub use mat9::{
     mat9_add, mat9_inv, mat9_mul, mat9_solve, mat9_symmetrize, mat9_transpose, mat9_vec_mul,
+};
+pub use regularize::{
+    RegularizationError, RegularizationReport, TikhonovReport, eigenvalue_floor, nearest_psd,
+    tikhonov, tikhonov_with_report,
 };
 pub use vec3::{cross3, dot3, norm_squared3, norm3, normalize3};

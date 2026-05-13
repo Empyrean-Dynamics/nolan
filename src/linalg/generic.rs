@@ -744,6 +744,139 @@ pub fn mat_ata<const M: usize, const N: usize>(a: &[[f64; N]; M]) -> [[f64; N]; 
     c
 }
 
+/// Maximum power-iteration sweep budget for [`condition_number`]. Generous
+/// — converges in ≲ 50 iterations for κ ≤ 1e10; the 10× headroom covers
+/// pathological clustered-spectrum cases.
+const CONDITION_NUMBER_MAX_ITER: usize = 500;
+
+/// 2-norm condition number of an \\(N \times N\\) matrix:
+/// \\(\kappa_2(A) = \sigma_{\max}(A) / \sigma_{\min}(A)\\), where the
+/// singular values are computed as \\(\sigma_i = \sqrt{\lambda_i(A^\top A)}\\).
+///
+/// - \\(\sigma_{\max}^2\\) via power iteration on \\(A^\top A\\).
+/// - \\(\sigma_{\min}^2\\) via inverse power iteration on \\(A^\top A\\),
+///   solving \\((A^\top A) \mathbf{y} = \mathbf{x}_k\\) at each step using
+///   [`mat_solve`] with scaled partial pivoting.
+///
+/// Returns `f64::INFINITY` in any of the following pathological cases
+/// (all consistent with \\(\sigma_{\min} = 0\\) at the current numerical
+/// tolerance):
+///
+/// - `mat_solve` reports \\(A^\top A\\) as scaled-relative singular.
+/// - The inverse-power iterate norm underflows to denormal.
+/// - The inverse-power iteration fails to converge within
+///   [`CONDITION_NUMBER_MAX_ITER`] sweeps (rare; fires `debug_assert!`
+///   in debug builds so the developer can investigate the pathological
+///   spectrum).
+#[allow(clippy::needless_range_loop)]
+pub fn condition_number<const N: usize>(a: &[[f64; N]; N]) -> f64 {
+    let ata = mat_ata::<N, N>(a);
+    let (v_max, lambda_max) = mat_eigenvector_max(&ata, CONDITION_NUMBER_MAX_ITER, 1e-14);
+    if lambda_max <= 0.0 {
+        return f64::INFINITY;
+    }
+    let sigma_max = lambda_max.sqrt();
+
+    // Inverse power iteration: x_{k+1} = ATA⁻¹ x_k / ‖ATA⁻¹ x_k‖.
+    //
+    // Initial vector: deflate `[1, 0, ..., 0]` against the dominant
+    // eigenvector v_max so that x ⊥ v_max. Otherwise, when v_max
+    // happens to be parallel to a constant vector — common for
+    // symmetric `[[a, b], [b, a]]`-pattern blocks — the default
+    // `[1/√N, ..., 1/√N]` would start exactly orthogonal to v_min
+    // (for N=2) and inverse iteration would never pick up a v_min
+    // component. With deflation we're guaranteed to have nonzero
+    // overlap with the remaining (N−1)-dimensional subspace.
+    let mut x = [0.0_f64; N];
+    x[0] = 1.0;
+    let mut dot_with_vmax = 0.0;
+    for i in 0..N {
+        dot_with_vmax += x[i] * v_max[i];
+    }
+    for i in 0..N {
+        x[i] -= dot_with_vmax * v_max[i];
+    }
+    let x_norm = vec_norm(&x);
+    if x_norm < 1e-300 {
+        // x became (numerically) parallel to v_max — fall back to a
+        // different e_k. For non-degenerate spectra this branch is
+        // unreachable; defensive only.
+        let mut k = 1;
+        loop {
+            x = [0.0_f64; N];
+            if k >= N {
+                return f64::INFINITY;
+            }
+            x[k] = 1.0;
+            let mut d = 0.0;
+            for i in 0..N {
+                d += x[i] * v_max[i];
+            }
+            for i in 0..N {
+                x[i] -= d * v_max[i];
+            }
+            let n = vec_norm(&x);
+            if n >= 1e-300 {
+                let inv_n = 1.0 / n;
+                for i in 0..N {
+                    x[i] *= inv_n;
+                }
+                break;
+            }
+            k += 1;
+        }
+    } else {
+        let inv_x_norm = 1.0 / x_norm;
+        for i in 0..N {
+            x[i] *= inv_x_norm;
+        }
+    }
+
+    let mut lambda_inv = 0.0;
+    let mut converged = false;
+    for _ in 0..CONDITION_NUMBER_MAX_ITER {
+        let y = match mat_solve::<f64, N>(&ata, &x) {
+            Some(y) => y,
+            None => return f64::INFINITY,
+        };
+        let y_norm = vec_norm(&y);
+        if y_norm < 1e-300 {
+            return f64::INFINITY;
+        }
+        // Rayleigh quotient: x · y / ‖x‖² gives the dominant eigenvalue of ATA⁻¹.
+        // Since ‖x‖ = 1 already, the inner product is x · y directly.
+        let mut dot = 0.0;
+        for i in 0..N {
+            dot += x[i] * y[i];
+        }
+        let new_lambda_inv = dot;
+        let inv_y_norm = 1.0 / y_norm;
+        for i in 0..N {
+            x[i] = y[i] * inv_y_norm;
+        }
+        if (new_lambda_inv - lambda_inv).abs() < 1e-14 * new_lambda_inv.abs() {
+            lambda_inv = new_lambda_inv;
+            converged = true;
+            break;
+        }
+        lambda_inv = new_lambda_inv;
+    }
+
+    if !converged {
+        debug_assert!(
+            converged,
+            "condition_number inverse-power iteration did not converge in {CONDITION_NUMBER_MAX_ITER} sweeps; \
+             last lambda_inv = {lambda_inv}. Treating as scaled-relative singular."
+        );
+        return f64::INFINITY;
+    }
+    if lambda_inv <= 0.0 {
+        return f64::INFINITY;
+    }
+    let sigma_min = (1.0 / lambda_inv).sqrt();
+    sigma_max / sigma_min
+}
+
 #[cfg(test)]
 #[allow(clippy::needless_range_loop)]
 #[allow(clippy::assign_op_pattern)]
@@ -1550,5 +1683,54 @@ mod tests {
         let a: [[f64; 3]; 3] = [[0.0; 3]; 3];
         let b: [f64; 3] = [1.0, 2.0, 3.0];
         assert!(mat_solve::<f64, 3>(&a, &b).is_none());
+    }
+
+    // ── Phase 3B: condition_number ─────────────────────────────
+
+    #[test]
+    fn test_condition_number_identity() {
+        let i: [[f64; 3]; 3] =
+            std::array::from_fn(|i| std::array::from_fn(|j| if i == j { 1.0 } else { 0.0 }));
+        let kappa = condition_number(&i);
+        assert!((kappa - 1.0).abs() < 1e-6, "kappa = {kappa}");
+    }
+
+    #[test]
+    fn test_condition_number_diagonal_known() {
+        // For diag(10, 1) → σ = (10, 1), κ = 10.
+        let a = [[10.0_f64, 0.0], [0.0, 1.0]];
+        let kappa = condition_number(&a);
+        assert!((kappa - 10.0).abs() / 10.0 < 1e-6, "kappa = {kappa}");
+    }
+
+    #[test]
+    fn test_condition_number_orthogonal_is_one() {
+        // 2D rotation: σ_max = σ_min = 1 → κ = 1.
+        let theta = 1.2_f64;
+        let a = [[theta.cos(), -theta.sin()], [theta.sin(), theta.cos()]];
+        let kappa = condition_number(&a);
+        assert!((kappa - 1.0).abs() < 1e-6, "kappa = {kappa}");
+    }
+
+    #[test]
+    fn test_condition_number_singular_returns_infinity() {
+        // Rank-deficient matrix: [[1, 2], [2, 4]] → mat_solve returns None → κ = ∞.
+        let a = [[1.0_f64, 2.0], [2.0, 4.0]];
+        let kappa = condition_number(&a);
+        assert!(kappa.is_infinite(), "kappa = {kappa}");
+    }
+
+    #[test]
+    fn test_condition_number_ill_conditioned() {
+        // Hilbert-style matrix: known ill-conditioned. We just verify κ >> 1.
+        let a = [
+            [1.0, 0.5, 1.0 / 3.0],
+            [0.5, 1.0 / 3.0, 0.25],
+            [1.0 / 3.0, 0.25, 0.2],
+        ];
+        let kappa = condition_number(&a);
+        // κ(H_3) ≈ 524, well above 100.
+        assert!(kappa > 100.0, "kappa = {kappa}");
+        assert!(kappa.is_finite(), "kappa = {kappa}");
     }
 }
