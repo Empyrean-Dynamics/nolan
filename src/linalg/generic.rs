@@ -544,7 +544,66 @@ pub fn mat_symmetric_eigen<const N: usize>(a: &[[f64; N]; N]) -> Option<([f64; N
     Some((sorted_eigs, sorted_v))
 }
 
+// ── Phase 1E additions: rectangular mat_mul, transpose, AᵀA ─────────
+
+/// Rectangular matrix multiplication: \\(C = A B\\) where
+/// \\(A\\) is \\(M \times K\\), \\(B\\) is \\(K \times N\\),
+/// \\(C\\) is \\(M \times N\\).
+#[allow(clippy::needless_range_loop)]
+pub fn mat_mul<const M: usize, const K: usize, const N: usize>(
+    a: &[[f64; K]; M],
+    b: &[[f64; N]; K],
+) -> [[f64; N]; M] {
+    let mut c = [[0.0_f64; N]; M];
+    for i in 0..M {
+        for j in 0..N {
+            let mut s = 0.0;
+            for k in 0..K {
+                s += a[i][k] * b[k][j];
+            }
+            c[i][j] = s;
+        }
+    }
+    c
+}
+
+/// Transpose of an \\(M \times N\\) matrix: returns \\(A^\top\\) of shape
+/// \\(N \times M\\).
+#[allow(clippy::needless_range_loop)]
+pub fn mat_transpose<const M: usize, const N: usize>(a: &[[f64; N]; M]) -> [[f64; M]; N] {
+    let mut t = [[0.0_f64; M]; N];
+    for i in 0..M {
+        for j in 0..N {
+            t[j][i] = a[i][j];
+        }
+    }
+    t
+}
+
+/// Symmetric product \\(A^\top A\\) for an \\(M \times N\\) matrix.
+/// Returns an \\(N \times N\\) symmetric matrix.
+///
+/// Slightly cheaper than `mat_mul(&mat_transpose(a), a)` because only
+/// the lower triangle is computed and mirrored.
+#[allow(clippy::needless_range_loop)]
+pub fn mat_ata<const M: usize, const N: usize>(a: &[[f64; N]; M]) -> [[f64; N]; N] {
+    let mut c = [[0.0_f64; N]; N];
+    for i in 0..N {
+        for j in 0..=i {
+            let mut s = 0.0;
+            for k in 0..M {
+                s += a[k][i] * a[k][j];
+            }
+            c[i][j] = s;
+            c[j][i] = s;
+        }
+    }
+    c
+}
+
 #[cfg(test)]
+#[allow(clippy::needless_range_loop)]
+#[allow(clippy::assign_op_pattern)]
 mod tests {
     use super::*;
     use crate::jets::Jet1;
@@ -979,5 +1038,136 @@ mod tests {
         let a = [[3.0, 0.0], [0.0, 7.0]];
         let (_v, lambda) = mat_eigenvector_max(&a, 100, 1e-12);
         assert!((lambda - 7.0).abs() < 1e-8, "lambda={lambda}");
+    }
+
+    // ── Phase 1E: mat_mul ───────────────────────────────────────
+
+    #[test]
+    fn test_mat_mul_identity() {
+        let i: [[f64; 3]; 3] =
+            std::array::from_fn(|i| std::array::from_fn(|j| if i == j { 1.0 } else { 0.0 }));
+        let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let c = mat_mul::<3, 3, 3>(&a, &i);
+        for row in 0..3 {
+            for col in 0..3 {
+                assert_eq!(c[row][col], a[row][col]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_mat_mul_rectangular_2x3_times_3x4() {
+        let a: [[f64; 3]; 2] = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        let b: [[f64; 4]; 3] = [
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+        ];
+        let c = mat_mul::<2, 3, 4>(&a, &b);
+        let expected: [[f64; 4]; 2] = [[1.0, 2.0, 3.0, 6.0], [4.0, 5.0, 6.0, 15.0]];
+        for row in 0..2 {
+            for col in 0..4 {
+                assert!((c[row][col] - expected[row][col]).abs() < 1e-14);
+            }
+        }
+    }
+
+    #[test]
+    fn test_mat_mul_matches_mat3_mul() {
+        // Byte-equality with the existing 3×3 specialization.
+        use crate::linalg::mat3::mat3_mul;
+        let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let b = [[9.0, 8.0, 7.0], [6.0, 5.0, 4.0], [3.0, 2.0, 1.0]];
+        let c_specialized = mat3_mul(&a, &b);
+        let c_generic = mat_mul::<3, 3, 3>(&a, &b);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(c_specialized[i][j], c_generic[i][j]);
+            }
+        }
+    }
+
+    // ── Phase 1E: mat_transpose ─────────────────────────────────
+
+    #[test]
+    fn test_mat_transpose_square() {
+        let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let t = mat_transpose::<3, 3>(&a);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(t[j][i], a[i][j]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_mat_transpose_rectangular() {
+        let a: [[f64; 4]; 2] = [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]];
+        let t: [[f64; 2]; 4] = mat_transpose::<2, 4>(&a);
+        for i in 0..2 {
+            for j in 0..4 {
+                assert_eq!(t[j][i], a[i][j]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_mat_transpose_involutive() {
+        let a: [[f64; 5]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| (3 * i + j) as f64));
+        let t = mat_transpose::<3, 5>(&a);
+        let tt = mat_transpose::<5, 3>(&t);
+        for i in 0..3 {
+            for j in 0..5 {
+                assert_eq!(tt[i][j], a[i][j]);
+            }
+        }
+    }
+
+    // ── Phase 1E: mat_ata ───────────────────────────────────────
+
+    #[test]
+    fn test_mat_ata_identity() {
+        let i: [[f64; 3]; 3] =
+            std::array::from_fn(|i| std::array::from_fn(|j| if i == j { 1.0 } else { 0.0 }));
+        let c = mat_ata::<3, 3>(&i);
+        for row in 0..3 {
+            for col in 0..3 {
+                assert_eq!(c[row][col], if row == col { 1.0 } else { 0.0 });
+            }
+        }
+    }
+
+    #[test]
+    fn test_mat_ata_matches_explicit() {
+        let a: [[f64; 3]; 4] = [
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
+            [7.0, 8.0, 9.0],
+            [-1.0, 0.5, 0.25],
+        ];
+        let at = mat_transpose::<4, 3>(&a);
+        let expected = mat_mul::<3, 4, 3>(&at, &a);
+        let computed = mat_ata::<4, 3>(&a);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (computed[i][j] - expected[i][j]).abs() < 1e-12,
+                    "({i},{j}): {} vs {}",
+                    computed[i][j],
+                    expected[i][j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_mat_ata_symmetric() {
+        let a: [[f64; 4]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| (i + j) as f64));
+        let c = mat_ata::<3, 4>(&a);
+        for i in 0..4 {
+            for j in 0..4 {
+                assert_eq!(c[i][j], c[j][i]);
+            }
+        }
     }
 }
