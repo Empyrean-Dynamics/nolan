@@ -1,5 +1,6 @@
 pub mod angles;
 pub mod differentiate;
+pub mod grids;
 pub mod impls;
 pub mod jets;
 pub mod linalg;
