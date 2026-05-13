@@ -182,21 +182,65 @@ Stack-allocated generic matrix operations for any `N`:
 ```rust
 use nolan::linalg::*;
 
-// Solve Ax = b (Gauss-Jordan with partial pivoting)
+// Solve Ax = b (Gauss-Jordan with scaled partial pivoting, NR §2.5)
 let x = mat_solve(&a, &b).unwrap();
 
 // Cholesky decomposition (symmetric positive-definite)
 let l = mat_cholesky(&cov).unwrap();  // A = L L^T
 
-// Other operations
+// Inverses, eigen, and decompositions
 let inv = mat_inv(&a).unwrap();
 let d2 = mahalanobis_distance_squared(&x, &mu, &cov).unwrap();
 let (v, lambda) = mat_eigenvector_max(&a, 100, 1e-12);
+let (eigs, vecs) = mat_symmetric_eigen(&cov).unwrap();   // Jacobi
+let kopp = sym_eigenvalues_3(&cov_3x3);                  // closed-form 3×3
+let det = mat_det(&a);
 let ld = mat_log_det(&a);
-let tr = mat_trace(&a);
+let kappa = condition_number(&a);                         // κ₂(A) = σ_max / σ_min
+let sigma_max = mat_largest_singular_value(&a, 100, 1e-12);
+let trace_cube = mat_trace_cube(&a, &b);                  // Tr((AB)³)
+
+// Rectangular `f64`-only primitives over const-generic shapes
+let c = mat_mul::<2, 3, 4>(&a_2x3, &b_3x4);              // 2×3 · 3×4 → 2×4
+let at = mat_transpose::<2, 3>(&a_2x3);
+let ata = mat_ata::<2, 3>(&a_2x3);                       // Aᵀ A, 3×3
+let frob = mat_frobenius::<3, 4>(&a_3x4);
 ```
 
-Specialized fast paths for 3x3, 6x6, and 9x9 matrices.
+Scaled partial pivoting (NR §2.5) underpins all `mat_solve` / `mat_inv` /
+`matN_solve` / `matN_inv` / `mat_det` paths via the shared
+`nolan::linalg::NOLAN_REL_TOL` (1e-14) and `NOLAN_MIN_SCALE` (1e-150)
+constants. `mat3_inv` / `mat3_solve` use a relative determinant guard
+`|det| < REL_TOL · max_entry³`; for marginally-conditioned 3×3 inputs
+prefer `mat_inv::<3>` (carries the scaled pivot).
+
+Stack-allocated specialised fast paths for 3×3, 6×6, and 9×9 matrices
+(`mat3_*`, `mat6_*`, `mat9_*`) — generic over `T: DifferentiableMath`
+so they work with `f64` and Jet types alike.
+
+### Covariance regularization (`nolan::linalg::regularize`)
+
+```rust
+use nolan::linalg::regularize::*;
+
+// Project a possibly-indefinite covariance onto the PSD cone with a
+// minimum eigenvalue floor (Higham 1988).
+let report = nearest_psd::<6>(&cov, 1e-12).unwrap();
+println!("clipped {} eigenvalues, max delta = {}",
+    report.n_clipped, report.max_clip_magnitude);
+
+// Tikhonov damping: A + αI.
+let damped = tikhonov::<6>(&cov, 1e-9);
+
+// Tikhonov with before/after κ₂ — surfaces under-damping at the call site.
+let report = tikhonov_with_report::<6>(&cov, 1e-6);
+if report.condition_number_after > 1e10 {
+    // α was too small; retry with a larger damping factor.
+}
+```
+
+The `RegularizationReport<N>` and `TikhonovReport<N>` structs are
+`#[must_use]` — callers cannot silently drop the diagnostic fields.
 
 ## Optimization
 
@@ -247,6 +291,63 @@ let solution = solve(&mut problem, x0, &config, prior)?;
 Features: LM adaptive damping, Bayesian prior augmentation, second-order
 Hessian correction (`solve2`), formal covariance extraction, optional
 problem-driven step bounds.
+
+## Statistics
+
+`nolan::statistics::distributions` ships the scalar-input distribution
+primitives:
+
+```rust
+use nolan::statistics::{ln_gamma, upper_inc_gamma_reg, chi2_sf,
+                         normal_pdf, normal_cdf};
+
+let p = chi2_sf(reduced_chi2 * dof as f64, dof);  // χ² survival
+let z = (x - mu) / sigma;
+let prob = normal_cdf(z);
+```
+
+`nolan::statistics::multivariate` ships N-dimensional Gaussian primitives
+generic over the state dimension:
+
+```rust
+use nolan::statistics::{split_gaussian, sigma_points, sample_statistics};
+
+// Canonical 2N+1 unscaled Julier-Uhlmann sigma points: sample_statistics
+// over the returned set round-trips exactly to (mu, cov).
+let points = sigma_points::<6>(&mu, &cov).unwrap();
+let (mu_back, cov_back) = sample_statistics::<6>(&points).unwrap();
+
+// Equal-weight Gaussian mixture decomposition along a chosen direction
+// (DeMars-style uniform spacing; preserves the mixture mean and
+// covariance for any K ≥ 1).
+let components = split_gaussian::<6>(&mu, &cov, &direction, 3).unwrap();
+```
+
+## Grids
+
+NumPy-semantics endpoint-inclusive grid generators and a clamping linear
+interpolator:
+
+```rust
+use nolan::grids::{linspace, logspace, linear_clamped};
+
+let lin = linspace(0.0, 1.0, 11);          // [0.0, 0.1, ..., 1.0]
+let log = logspace(1e-3, 1e3, 7);          // log-spaced over 6 decades
+let y = linear_clamped(&xs, &ys, query_x); // clamped at boundaries
+```
+
+`linear_clamped<T>` is generic over `T: Copy + Add<Output = T> + Mul<f64, Output = T>` —
+so it works for scalar values and user-defined types that impl those traits.
+
+## Angles
+
+```rust
+use nolan::angles::{wrap_pi, wrap_2pi, wrap_180, wrap_360};
+
+let residual = wrap_pi(observed_ra - predicted_ra);  // half-open (-π, π]
+let lon = wrap_2pi(atan2_result);                    // [0, 2π)
+let dec_deg = wrap_180(d - d_ref);                   // (-180°, 180°]
+```
 
 ## Version
 
