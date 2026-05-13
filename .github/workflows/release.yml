@@ -20,12 +20,17 @@ jobs:
         with:
           rustflags: ""
 
-      - name: Verify tag matches Cargo.toml version
+      - name: Verify tag matches Cargo.toml and CITATION.cff versions
         run: |
           tag="${GITHUB_REF#refs/tags/v}"
           cargo_version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          citation_version=$(awk '/^version:/ {print $2; exit}' CITATION.cff)
           if [ "$tag" != "$cargo_version" ]; then
             echo "::error::Tag v${tag} does not match Cargo.toml version ${cargo_version}"
+            exit 1
+          fi
+          if [ "$tag" != "$citation_version" ]; then
+            echo "::error::Tag v${tag} does not match CITATION.cff version ${citation_version}"
             exit 1
           fi
 
@@ -34,6 +39,18 @@ jobs:
 
       - name: Test
         run: cargo test --release
+
+      # Publish to crates.io as `hyperjet`. `cargo publish` does its own
+      # from-scratch tarball-then-build verification, so packaging errors
+      # (missing files in `include = `, broken manifest, etc.) fail before
+      # uploading. Idempotent — a duplicate version is rejected by crates.io,
+      # so re-running this workflow after a transient failure is safe.
+      # Uses the org-scoped `CARGO_REGISTRY_TOKEN` secret (shared with the
+      # empyrean workspace's release pipeline).
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

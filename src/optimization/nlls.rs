@@ -73,7 +73,7 @@ pub trait NLLSProblem<const N: usize> {
     /// bound each sub-step to at most half its current sub-magnitude:
     ///
     /// ```
-    /// use nolan::optimization::{NLLSProblem, NLLSEvaluation};
+    /// use hyperjet::optimization::{NLLSProblem, NLLSEvaluation};
     ///
     /// struct OdProblem;
     /// impl NLLSProblem<6> for OdProblem {
@@ -787,8 +787,11 @@ mod tests {
         // tiny — so each overshot step lands in an equally poor linear
         // regime and the cost grows across iterations.
         //
-        // This is the pattern that motivated scott's hand-rolled step
-        // bounds on r and v subvectors during orbit determination.
+        // This is the pattern that motivates problem-driven step
+        // bounds via `NLLSProblem::constrain_step` — common in any
+        // nonlinear least-squares solve where the residual surface
+        // has near-zero-Jacobian regions that LM's intrinsic λ
+        // adaptation cannot escape.
         let eval = |x: &[f64; 1]| {
             let d = x[0] - 5.0;
             let r = (1.0 + d * d).ln();
@@ -828,9 +831,10 @@ mod tests {
             sol_free.x[0],
         );
 
-        // Clamp |Δx| to at most half of |x| (same pattern as scott's OD
-        // loop, using iterate magnitude rather than distance to the
-        // unknown minimum). Converges toward x = 5 in a handful of steps.
+        // Clamp |Δx| to at most half of |x| — bounds step size by
+        // iterate magnitude (rather than distance to the unknown
+        // minimum, which is naturally unknown ahead of convergence).
+        // Converges toward x = 5 in a handful of steps.
         struct Clamped;
         impl NLLSProblem<1> for Clamped {
             fn evaluate(&mut self, x: &[f64; 1]) -> NLLSEvaluation<1> {

@@ -1,6 +1,6 @@
-use nolan::jets::Jet1;
-use nolan::linalg::*;
-use nolan::traits::{Differentiable, FirstOrder};
+use hyperjet::jets::Jet1;
+use hyperjet::linalg::*;
+use hyperjet::traits::{Differentiable, FirstOrder};
 
 /// Verify that `mat_solve::<_, 6>` and `mat6_solve` agree for f64.
 #[test]

@@ -23,7 +23,7 @@ use std::f64::consts::PI;
 /// # Examples
 ///
 /// ```
-/// use nolan::statistics::ln_gamma;
+/// use hyperjet::statistics::ln_gamma;
 /// use std::f64::consts::PI;
 ///
 /// // Γ(1) = 1, so ln Γ(1) = 0.
@@ -66,7 +66,7 @@ pub fn ln_gamma(x: f64) -> f64 {
 /// # Examples
 ///
 /// ```
-/// use nolan::statistics::upper_inc_gamma_reg;
+/// use hyperjet::statistics::upper_inc_gamma_reg;
 ///
 /// // Q(a, 0) = 1 for any a > 0.
 /// assert!((upper_inc_gamma_reg(2.0, 0.0) - 1.0).abs() < 1e-12);
@@ -158,7 +158,7 @@ fn upper_gamma_cf(a: f64, x: f64) -> f64 {
 /// # Examples
 ///
 /// ```
-/// use nolan::statistics::chi2_sf;
+/// use hyperjet::statistics::chi2_sf;
 ///
 /// // χ²(1) at x=0 has SF=1 (all probability to the right of 0).
 /// assert!((chi2_sf(0.0, 1) - 1.0).abs() < 1e-12);
@@ -185,7 +185,7 @@ pub fn chi2_sf(x: f64, k: usize) -> f64 {
 /// # Examples
 ///
 /// ```
-/// use nolan::statistics::normal_pdf;
+/// use hyperjet::statistics::normal_pdf;
 /// use std::f64::consts::PI;
 ///
 /// // φ(0) = 1/√(2π).
@@ -209,7 +209,7 @@ pub fn normal_pdf(x: f64) -> f64 {
 /// # Examples
 ///
 /// ```
-/// use nolan::statistics::normal_cdf;
+/// use hyperjet::statistics::normal_cdf;
 ///
 /// assert!((normal_cdf(0.0) - 0.5).abs() < 1e-7);
 /// // Symmetric: Φ(x) + Φ(-x) = 1.
@@ -355,10 +355,10 @@ mod tests {
         //
         // Tolerance 1e-4 relative: at small `a` (e.g., k=1 → a=0.5),
         // the series/continued-fraction transition has known limited
-        // accuracy (~1e-5 absolute in the SF tail) — matches the
-        // accuracy historically delivered by scott's OD acceptance
-        // gates. Tighten if/when we switch to a higher-precision
-        // incomplete-gamma routine.
+        // accuracy (~1e-5 absolute in the SF tail) — well within the
+        // tolerance typical of χ² acceptance gating in nonlinear
+        // least-squares solvers. Tighten if/when we switch to a
+        // higher-precision incomplete-gamma routine.
         let cases = [
             // (x, k, expected_sf)
             (1.0_f64, 1, 0.317_310_507_862_915_4), // erfc(√0.5)
@@ -467,9 +467,9 @@ mod tests {
         // Reference values from scipy.stats.norm.cdf.
         let cases = [
             (-3.0_f64, 0.001_349_898_031_630_094_5),
-            (-2.0, 0.022_750_131_948_179_209),
+            (-2.0, 0.022_750_131_948_179_21),
             (-1.0, 0.158_655_253_931_457_05),
-            (-0.5, 0.308_537_538_725_986_97),
+            (-0.5, 0.308_537_538_725_987),
             (0.0, 0.5),
             (0.5, 0.691_462_461_274_013),
             (1.0, 0.841_344_746_068_542_9),

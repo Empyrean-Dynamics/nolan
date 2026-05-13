@@ -1,20 +1,60 @@
 <img src="docs/nolan-icon.png" width="140" alt="nolan">
 
-# nolan
+# nolan (hyperjet)
 Const-generic hyperdual numbers for automatic differentiation in Rust
 
 <a href="https://github.com/Empyrean-Dynamics/nolan/actions/workflows/rust.yml"><img src="https://github.com/Empyrean-Dynamics/nolan/actions/workflows/rust.yml/badge.svg" alt="CI"></a>
-<a href="https://claude.ai"><img src="https://img.shields.io/badge/Built%20with-Claude%20Code-D97757?logo=anthropic&logoColor=white&style=flat-square" alt="Built with Claude Code"></a>
+<a href="https://crates.io/crates/hyperjet"><img src="https://img.shields.io/crates/v/hyperjet.svg?style=flat-square&label=crates.io" alt="crates.io"></a>
+<a href="https://docs.rs/hyperjet"><img src="https://img.shields.io/docsrs/hyperjet?style=flat-square&label=docs.rs" alt="docs.rs"></a>
+<a href="https://opensource.org/licenses/BSD-3-Clause"><img src="https://img.shields.io/badge/License-BSD%203--Clause-blue.svg?style=flat-square" alt="License: BSD-3-Clause"></a>
 <br>
+<a href="https://claude.ai"><img src="https://img.shields.io/badge/Built%20with-Claude%20Code-D97757?logo=anthropic&logoColor=white&style=flat-square" alt="Built with Claude Code"></a>
 <a href="https://www.empyrean-dynamics.com"><img src="https://img.shields.io/badge/Website-empyrean--dynamics.com-1a1a2e?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMTAiLz48bGluZSB4MT0iMiIgeTE9IjEyIiB4Mj0iMjIiIHkyPSIxMiIvPjxwYXRoIGQ9Ik0xMiAyYTE1LjMgMTUuMyAwIDAgMSA0IDEwIDE1LjMgMTUuMyAwIDAgMS00IDEwIDE1LjMgMTUuMyAwIDAgMS00LTEwIDE1LjMgMTUuMyAwIDAgMSA0LTEweiIvPjwvc3ZnPg==&logoColor=white&style=flat-square" alt="Website"></a>
 <a href="https://github.com/Empyrean-Dynamics"><img src="https://img.shields.io/badge/GitHub-Empyrean--Dynamics-1a1a2e?logo=github&logoColor=white&style=flat-square" alt="GitHub"></a>
 
 ---
 
-nolan provides first-, second-, and third-order jet types that propagate exact
-derivatives through arbitrary computations. It is designed for astrodynamics
-applications where derivatives of physical parameters (position, velocity, time)
-are needed for orbit determination, covariance propagation, and sensitivity analysis.
+nolan is a **forward-mode automatic differentiation** library built around
+**const-generic, stack-allocated hyperdual numbers** (jets). It provides
+`Jet1<N>` for gradients, `Jet2<N, H>` for full Hessians, and `Jet3<N, H, T>`
+for third-order tensors — all without `Vec` or `Box`, all generic over the
+parameter dimension `N`. The same function body type-checks against `f64`
+(no derivatives), `Jet1` (gradients), `Jet2` (Hessians), or `Jet3` (third-
+order tensors). Linear algebra, statistics, grids, and angle-wrapping
+primitives layered on top compose naturally with any jet order, so an
+orbit-determination solve and its covariance propagation can share the
+same code path.
+
+The library was developed for astrodynamics — orbit determination,
+covariance propagation, close-approach sensitivity analysis — but the
+core types are domain-agnostic and useful anywhere exact, stack-allocated
+forward-mode derivatives matter: optimization, robotics inverse kinematics,
+physics simulation, ML gradient checking, sensitivity in scientific
+computing.
+
+## Installation
+
+The crate is published on crates.io as [`hyperjet`](https://crates.io/crates/hyperjet).
+The repo and internal codename stay `nolan`.
+
+```toml
+[dependencies]
+hyperjet = "1.7.0"
+```
+```rust
+use hyperjet::jets::Jet1;
+```
+
+Internal Empyrean callers can alias the dep back to `nolan` so existing
+`use nolan::...` source keeps working unchanged:
+
+```toml
+[dependencies]
+nolan = { package = "hyperjet", version = "1.7.0" }
+```
+```rust,ignore
+use nolan::jets::Jet1;
+```
 
 ## Types
 
@@ -23,7 +63,7 @@ are needed for orbit determination, covariance propagation, and sensitivity anal
 First-order jet: tracks a value and its gradient with respect to N parameters.
 
 ```rust
-use nolan::jets::Jet1;
+use hyperjet::jets::Jet1;
 
 // Create a variable seeded at parameter index 0
 let x = Jet1::<3>::variable(2.0, 0);
@@ -41,7 +81,7 @@ Second-order jet: tracks value, gradient, and the full Hessian matrix
 (stored as a lower-triangular array of size H = N(N+1)/2).
 
 ```rust
-use nolan::jets::{Jet2, hess_size};
+use hyperjet::jets::{Jet2, hess_size};
 
 let x = Jet2::<2, { hess_size(2) }>::variable(2.0, 0);
 let y = Jet2::<2, { hess_size(2) }>::variable(3.0, 1);
@@ -58,7 +98,7 @@ Third-order jet: tracks value, gradient, Hessian, and the full third-order
 tensor (stored as a lower-triangular array of size T = N(N+1)(N+2)/6).
 
 ```rust
-use nolan::jets::{Jet3, hess_size, tens_size};
+use hyperjet::jets::{Jet3, hess_size, tens_size};
 
 let x = Jet3::<1, { hess_size(1) }, { tens_size(1) }>::variable(1.0, 0);
 let f = x.powi(4);
@@ -78,6 +118,7 @@ assert_eq!(f.tens[0], 24.0);
 ### Type Aliases
 
 ```rust
+# use hyperjet::jets::{Jet1, Jet2, Jet3};
 type Dual = Jet1<1>;                     // Single-variable first derivative
 type HyperDual = Jet2<2, 3>;            // Two-variable second derivatives
 type HyperHyperDual = Jet3<2, 3, 4>;    // Two-variable third derivatives
@@ -98,12 +139,14 @@ Write functions once that work with `f64` (no derivatives), `Jet1` (gradients),
 `Jet2` (Hessians), or `Jet3` (third-order tensors):
 
 ```rust
-use nolan::traits::AutoDiff;
+use hyperjet::traits::AutoDiff;
 
 fn gravity<J: AutoDiff>(x: J, y: J, z: J, mu: f64) -> [J; 3] {
     let r = (x * x + y * y + z * z).sqrt();
     let r3 = r.powi(3);
-    [-mu * x / r3, -mu * y / r3, -mu * z / r3]
+    // `J * f64` is in the `Differentiable` trait bound; `f64 * J` is not
+    // generic over J, so we put the scalar on the right.
+    [x * (-mu) / r3, y * (-mu) / r3, z * (-mu) / r3]
 }
 ```
 
@@ -112,8 +155,8 @@ fn gravity<J: AutoDiff>(x: J, y: J, z: J, mu: f64) -> [J; 3] {
 For one-shot derivative computations, the `differentiate` module hides the
 Jet seeding + extraction boilerplate:
 
-```rust
-use nolan::differentiate::{differentiate1, differentiate2_6, differentiate3_6};
+```rust,ignore
+use hyperjet::differentiate::{differentiate1, differentiate2_6, differentiate3_6};
 
 // First derivatives
 let (value, grad) = differentiate1([1.5, 2.0], |[x, y]| x * y + x * x);
@@ -147,11 +190,11 @@ Jet2 covariance by default, then escalate to Jet3 for skewness diagnostics
 when a nonlinearity metric trips at a close-approach event — use the
 dispatched form:
 
-```rust
-use nolan::differentiate::{
+```rust,ignore
+use hyperjet::differentiate::{
     differentiate_dyn_6, AutoDiffFn, Order, Derivatives,
 };
-use nolan::traits::AutoDiff;
+use hyperjet::traits::AutoDiff;
 
 // Write the function body once; it works for Jet1, Jet2, or Jet3.
 struct MissDistance;
@@ -179,8 +222,8 @@ of dispatched order — `First` dispatch costs only ~7 ns more than the flat
 
 Stack-allocated generic matrix operations for any `N`:
 
-```rust
-use nolan::linalg::*;
+```rust,ignore
+use hyperjet::linalg::*;
 
 // Solve Ax = b (Gauss-Jordan with scaled partial pivoting, NR §2.5)
 let x = mat_solve(&a, &b).unwrap();
@@ -209,7 +252,7 @@ let frob = mat_frobenius::<3, 4>(&a_3x4);
 
 Scaled partial pivoting (NR §2.5) underpins all `mat_solve` / `mat_inv` /
 `matN_solve` / `matN_inv` / `mat_det` paths via the shared
-`nolan::linalg::NOLAN_REL_TOL` (1e-14) and `NOLAN_MIN_SCALE` (1e-150)
+`hyperjet::linalg::NOLAN_REL_TOL` (1e-14) and `NOLAN_MIN_SCALE` (1e-150)
 constants. `mat3_inv` / `mat3_solve` use a relative determinant guard
 `|det| < REL_TOL · max_entry³`; for marginally-conditioned 3×3 inputs
 prefer `mat_inv::<3>` (carries the scaled pivot).
@@ -218,10 +261,10 @@ Stack-allocated specialised fast paths for 3×3, 6×6, and 9×9 matrices
 (`mat3_*`, `mat6_*`, `mat9_*`) — generic over `T: DifferentiableMath`
 so they work with `f64` and Jet types alike.
 
-### Covariance regularization (`nolan::linalg::regularize`)
+### Covariance regularization (`hyperjet::linalg::regularize`)
 
-```rust
-use nolan::linalg::regularize::*;
+```rust,ignore
+use hyperjet::linalg::regularize::*;
 
 // Project a possibly-indefinite covariance onto the PSD cone with a
 // minimum eigenvalue floor (Higham 1988).
@@ -246,8 +289,8 @@ The `RegularizationReport<N>` and `TikhonovReport<N>` structs are
 
 Generic nonlinear least-squares solver (Gauss-Newton / Levenberg-Marquardt):
 
-```rust
-use nolan::optimization::*;
+```rust,ignore
+use hyperjet::optimization::*;
 
 let solution = solve_nlls(
     |x: &[f64; 3]| {
@@ -264,7 +307,7 @@ println!("x = {:?}, cost = {}", solution.x, solution.cost);
 
 For stateful problems, implement the `NLLSProblem<N>` trait:
 
-```rust
+```rust,ignore
 impl NLLSProblem<6> for MyProblem {
     fn evaluate(&mut self, x: &[f64; 6]) -> NLLSEvaluation<6> {
         // Propagate, compute residuals, extract Jacobian
@@ -294,11 +337,11 @@ problem-driven step bounds.
 
 ## Statistics
 
-`nolan::statistics::distributions` ships the scalar-input distribution
+`hyperjet::statistics::distributions` ships the scalar-input distribution
 primitives:
 
-```rust
-use nolan::statistics::{ln_gamma, upper_inc_gamma_reg, chi2_sf,
+```rust,ignore
+use hyperjet::statistics::{ln_gamma, upper_inc_gamma_reg, chi2_sf,
                          normal_pdf, normal_cdf};
 
 let p = chi2_sf(reduced_chi2 * dof as f64, dof);  // χ² survival
@@ -306,11 +349,11 @@ let z = (x - mu) / sigma;
 let prob = normal_cdf(z);
 ```
 
-`nolan::statistics::multivariate` ships N-dimensional Gaussian primitives
+`hyperjet::statistics::multivariate` ships N-dimensional Gaussian primitives
 generic over the state dimension:
 
-```rust
-use nolan::statistics::{split_gaussian, sigma_points, sample_statistics};
+```rust,ignore
+use hyperjet::statistics::{split_gaussian, sigma_points, sample_statistics};
 
 // Canonical 2N+1 unscaled Julier-Uhlmann sigma points: sample_statistics
 // over the returned set round-trips exactly to (mu, cov).
@@ -328,8 +371,8 @@ let components = split_gaussian::<6>(&mu, &cov, &direction, 3).unwrap();
 NumPy-semantics endpoint-inclusive grid generators and a clamping linear
 interpolator:
 
-```rust
-use nolan::grids::{linspace, logspace, linear_clamped};
+```rust,ignore
+use hyperjet::grids::{linspace, logspace, linear_clamped};
 
 let lin = linspace(0.0, 1.0, 11);          // [0.0, 0.1, ..., 1.0]
 let log = logspace(1e-3, 1e3, 7);          // log-spaced over 6 decades
@@ -341,8 +384,8 @@ so it works for scalar values and user-defined types that impl those traits.
 
 ## Angles
 
-```rust
-use nolan::angles::{wrap_pi, wrap_2pi, wrap_180, wrap_360};
+```rust,ignore
+use hyperjet::angles::{wrap_pi, wrap_2pi, wrap_180, wrap_360};
 
 let residual = wrap_pi(observed_ra - predicted_ra);  // half-open (-π, π]
 let lon = wrap_2pi(atan2_result);                    // [0, 2π)
@@ -352,7 +395,7 @@ let dec_deg = wrap_180(d - d_ref);                   // (-180°, 180°]
 ## Version
 
 ```rust
-println!("{}", nolan::version());
+println!("{}", hyperjet::version());
 // Tagged release: "1.0.0"
 // Development:    "1.0.1-dev+a3f7b2c"
 // Dirty:          "1.0.1-dev+a3f7b2c-dirty"

@@ -1,7 +1,7 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nolan::jets::Jet1;
-use nolan::linalg::regularize::{nearest_psd, tikhonov_with_report};
-use nolan::linalg::*;
+use hyperjet::jets::Jet1;
+use hyperjet::linalg::regularize::{nearest_psd, tikhonov_with_report};
+use hyperjet::linalg::*;
 
 fn make_dd6_f64() -> [[f64; 6]; 6] {
     let mut a = [[0.0; 6]; 6];

@@ -1,7 +1,7 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nolan::angles::{wrap_2pi, wrap_180, wrap_360, wrap_pi};
-use nolan::grids::{linear_clamped, linspace, logspace};
-use nolan::statistics::multivariate::{sample_statistics, sigma_points, split_gaussian};
+use hyperjet::angles::{wrap_2pi, wrap_180, wrap_360, wrap_pi};
+use hyperjet::grids::{linear_clamped, linspace, logspace};
+use hyperjet::statistics::multivariate::{sample_statistics, sigma_points, split_gaussian};
 
 fn make_cov_6() -> [[f64; 6]; 6] {
     let mut a = [[0.0_f64; 6]; 6];
