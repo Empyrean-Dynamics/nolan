@@ -11,9 +11,8 @@
 //!
 //! - [`distributions`] — `ln_gamma`, regularized incomplete gamma,
 //!   `chi2_sf`, `normal_pdf`, `normal_cdf`.
-//! - Higher-dimensional helpers (`split_gaussian`, `sigma_points`,
-//!   `sample_statistics`) live at the module root once their
-//!   matrix-shape parameters are lifted from villeneuve.
+//! - [`multivariate`] — `split_gaussian`, `sigma_points`,
+//!   `sample_statistics` generic over the state dimension `N`.
 //!
 //! # Numerical notes
 //!
@@ -26,5 +25,9 @@
 //!   approximation (max error < 7.5e-8).
 
 pub mod distributions;
+pub mod multivariate;
 
 pub use distributions::{chi2_sf, ln_gamma, normal_cdf, normal_pdf, upper_inc_gamma_reg};
+pub use multivariate::{
+    GaussianSplitError, SigmaPointsError, sample_statistics, sigma_points, split_gaussian,
+};
