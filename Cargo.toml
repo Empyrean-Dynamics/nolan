@@ -26,3 +26,7 @@ harness = false
 [[bench]]
 name = "benchmark_linalg"
 harness = false
+
+[[bench]]
+name = "benchmark_statistics"
+harness = false

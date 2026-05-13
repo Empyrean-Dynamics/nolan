@@ -1,5 +1,6 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nolan::jets::Jet1;
+use nolan::linalg::regularize::{nearest_psd, tikhonov_with_report};
 use nolan::linalg::*;
 
 fn make_dd6_f64() -> [[f64; 6]; 6] {
@@ -138,5 +139,89 @@ fn bench_generic(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_vec3, bench_mat6, bench_mat9, bench_generic);
+fn bench_rectangular(c: &mut Criterion) {
+    let h_2x6: [[f64; 6]; 2] = [
+        [1.0, 0.5, 0.25, 0.1, 0.05, 0.02],
+        [0.0, 1.0, 0.5, 0.25, 0.1, 0.05],
+    ];
+    let w_2x2: [[f64; 2]; 2] = [[100.0, 1.0], [1.0, 90.0]];
+
+    c.bench_function("mat_transpose_2x6", |bench| {
+        bench.iter(|| mat_transpose::<2, 6>(black_box(&h_2x6)))
+    });
+    c.bench_function("mat_mul_2x2x6", |bench| {
+        bench.iter(|| mat_mul::<2, 2, 6>(black_box(&w_2x2), black_box(&h_2x6)))
+    });
+
+    let h_t = mat_transpose::<2, 6>(&h_2x6);
+    let wh = mat_mul::<2, 2, 6>(&w_2x2, &h_2x6);
+    c.bench_function("mat_mul_6x2x6", |bench| {
+        bench.iter(|| mat_mul::<6, 2, 6>(black_box(&h_t), black_box(&wh)))
+    });
+
+    c.bench_function("mat_ata_2x6", |bench| {
+        bench.iter(|| mat_ata::<2, 6>(black_box(&h_2x6)))
+    });
+
+    let r = [1e-6_f64, 2e-6];
+    c.bench_function("mat_vec_mul_2", |bench| {
+        bench.iter(|| mat_vec_mul::<2>(black_box(&w_2x2), black_box(&r)))
+    });
+}
+
+fn bench_scalar_summaries(c: &mut Criterion) {
+    let a6 = make_dd6_f64();
+    let b6 = make_dd6_f64();
+
+    c.bench_function("mat_det_6", |bench| {
+        bench.iter(|| mat_det::<6>(black_box(&a6)))
+    });
+    c.bench_function("mat_trace_cube_6", |bench| {
+        bench.iter(|| mat_trace_cube::<6>(black_box(&a6), black_box(&b6)))
+    });
+    c.bench_function("mat_frobenius_6x6", |bench| {
+        bench.iter(|| mat_frobenius::<6, 6>(black_box(&a6)))
+    });
+    c.bench_function("mat_largest_singular_value_6", |bench| {
+        bench.iter(|| mat_largest_singular_value::<6>(black_box(&a6), 64, 1e-12))
+    });
+    c.bench_function("condition_number_6", |bench| {
+        bench.iter(|| condition_number::<6>(black_box(&a6)))
+    });
+}
+
+fn bench_eigen(c: &mut Criterion) {
+    let cov_3: [[f64; 3]; 3] = [[1.0, 0.2, 0.1], [0.2, 0.8, 0.05], [0.1, 0.05, 0.6]];
+    c.bench_function("sym_eigenvalues_3", |bench| {
+        bench.iter(|| sym_eigenvalues_3(black_box(&cov_3)))
+    });
+
+    let cov_6 = make_dd6_f64();
+    c.bench_function("mat_symmetric_eigen_6", |bench| {
+        bench.iter(|| mat_symmetric_eigen::<6>(black_box(&cov_6)))
+    });
+}
+
+fn bench_regularize(c: &mut Criterion) {
+    let mut cov_6 = make_dd6_f64();
+    cov_6[5][5] = 1e-18;
+    c.bench_function("nearest_psd_6", |bench| {
+        bench.iter(|| nearest_psd::<6>(black_box(&cov_6), 1e-12))
+    });
+    c.bench_function("tikhonov_with_report_6", |bench| {
+        bench.iter(|| tikhonov_with_report::<6>(black_box(&cov_6), 1e-10))
+    });
+}
+
+criterion_group!(
+    benches,
+    bench_vec3,
+    bench_mat6,
+    bench_mat9,
+    bench_generic,
+    bench_rectangular,
+    bench_scalar_summaries,
+    bench_eigen,
+    bench_regularize,
+);
 criterion_main!(benches);
