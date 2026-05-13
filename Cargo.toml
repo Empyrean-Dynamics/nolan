@@ -1,16 +1,18 @@
 [package]
-name = "nolan"
-version = "1.6.0"
+name = "hyperjet"
+version = "1.7.0"
 edition = "2024"
 rust-version = "1.90.0"
 authors = ["Joachim Moeyens <joachim@empyrean-dynamics.com>", "Empyrean Dynamics"]
-description = "Const-generic hyperdual numbers for automatic differentiation"
+description = "Forward-mode automatic differentiation with const-generic, stack-allocated first-, second-, and third-order jets (Jet1/Jet2/Jet3) for gradients, Hessians, and third-order tensors"
 repository = "https://github.com/Empyrean-Dynamics/nolan"
 license = "BSD-3-Clause"
+keywords = ["autodiff", "dual-numbers", "hyperdual", "jets", "forward-mode"]
+categories = ["mathematics", "science", "algorithms"]
 include = ["src/**/*", "Cargo.toml", "LICENSE", "README.md", "docs/katex-header.html"]
 
 [lib]
-name = "nolan"
+name = "hyperjet"
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--html-in-header", "docs/katex-header.html"]

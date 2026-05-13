@@ -47,7 +47,7 @@ pub type ThirdOrderTensor<const N: usize> = [[[f64; N]; N]; N];
 ///
 /// # Example
 /// ```
-/// use nolan::differentiate::differentiate1;
+/// use hyperjet::differentiate::differentiate1;
 /// // f(x, y) = x*y + x²
 /// // ∂f/∂x = y + 2x, ∂f/∂y = x
 /// let (value, grad) = differentiate1([1.5, 2.0], |[x, y]| x * y + x * x);
@@ -111,7 +111,7 @@ where
 ///
 /// # Example
 /// ```
-/// use nolan::differentiate::differentiate1_vec;
+/// use hyperjet::differentiate::differentiate1_vec;
 /// // Spherical coordinates: f(x, y, z) = (r, phi)
 /// let (values, jac) = differentiate1_vec([3.0, 4.0, 0.0], |[x, y, z]| {
 ///     let r = (x * x + y * y + z * z).sqrt();
@@ -304,8 +304,8 @@ impl<const N: usize, const M: usize> Derivatives<N, M> {
 /// requested [`Order`]. Typical impls are zero-sized structs:
 ///
 /// ```
-/// use nolan::differentiate::AutoDiffFn;
-/// use nolan::traits::AutoDiff;
+/// use hyperjet::differentiate::AutoDiffFn;
+/// use hyperjet::traits::AutoDiff;
 ///
 /// struct GravityAccel { mu: f64 }
 /// impl AutoDiffFn<6, 3> for GravityAccel {

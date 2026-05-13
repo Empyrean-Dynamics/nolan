@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```
-//! use nolan::optimization::*;
+//! use hyperjet::optimization::*;
 //!
 //! // Solve: find x such that [x[0] - 3, x[1] - 7] = [0, 0]
 //! let solution = solve_nlls(

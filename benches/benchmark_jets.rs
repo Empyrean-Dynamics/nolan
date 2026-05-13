@@ -1,6 +1,6 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nolan::jets::{Jet1, Jet2, Jet3, hess_size, tens_size};
-use nolan::traits::{FirstOrder, SecondOrder, ThirdOrder};
+use hyperjet::jets::{Jet1, Jet2, Jet3, hess_size, tens_size};
+use hyperjet::traits::{FirstOrder, SecondOrder, ThirdOrder};
 
 fn bench_jet1_constant(c: &mut Criterion) {
     c.bench_function("jet1_6_constant", |b| {
@@ -545,11 +545,11 @@ fn bench_jet3_9_gravity_pattern(c: &mut Criterion) {
 // the corresponding jet*_gravity_accel benches (compute-only, no seeding
 // or extraction), these show the wrapper overhead.
 
-use nolan::differentiate::{
+use hyperjet::differentiate::{
     AutoDiffFn, Order, differentiate_dyn_6, differentiate1, differentiate1_vec, differentiate2_6,
     differentiate3_6,
 };
-use nolan::traits::AutoDiff;
+use hyperjet::traits::AutoDiff;
 
 // Function struct used by the dispatcher benches (works with any Jet order).
 struct GravityAccelBench {

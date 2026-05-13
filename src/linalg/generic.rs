@@ -358,7 +358,6 @@ pub fn mat_eigenvector_max<const N: usize>(
     // Initial vector: normalised [1, 1, ..., 1]
     let inv_sqrt_n = 1.0 / (N as f64).sqrt();
     let mut v = [inv_sqrt_n; N];
-    let mut lambda = 0.0_f64;
 
     for _ in 0..max_iter {
         let w = mat_vec_mul(a, &v);
@@ -379,7 +378,7 @@ pub fn mat_eigenvector_max<const N: usize>(
         for i in 0..N {
             v[i] = w[i] / w_norm;
         }
-        lambda = sign * w_norm;
+        let lambda = sign * w_norm;
 
         // Check convergence: ||Av - λv|| / |λ|
         let av = mat_vec_mul(a, &v);
@@ -393,13 +392,12 @@ pub fn mat_eigenvector_max<const N: usize>(
         }
     }
 
-    // Rayleigh quotient refinement
+    // Rayleigh quotient refinement: λ = vᵀ A v (v is unit-normalised).
     let av = mat_vec_mul(a, &v);
-    let mut numerator = 0.0;
+    let mut lambda = 0.0;
     for i in 0..N {
-        numerator += v[i] * av[i];
+        lambda += v[i] * av[i];
     }
-    lambda = numerator; // v^T A v (v is unit)
 
     (v, lambda)
 }
@@ -451,7 +449,7 @@ pub fn mat_eigenvector_max<const N: usize>(
 /// # Example
 ///
 /// ```
-/// use nolan::linalg::generic::mat_symmetric_eigen;
+/// use hyperjet::linalg::generic::mat_symmetric_eigen;
 ///
 /// // Identity matrix: all eigenvalues are 1.
 /// let mut id = [[0.0_f64; 6]; 6];
@@ -1616,7 +1614,7 @@ mod tests {
                 [0.5 * alpha, 3.0 * alpha, 0.2 * alpha],
                 [0.0, 0.2 * alpha, 1.0 * alpha],
             ];
-            let b = [1.0_f64 * alpha, 0.0, -1.0 * alpha];
+            let b: [f64; 3] = [alpha, 0.0, -alpha];
             let x = mat_solve::<f64, 3>(&a, &b).expect("solvable");
             // A·x ≈ b
             for i in 0..3 {

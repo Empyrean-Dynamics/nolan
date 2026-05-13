@@ -25,7 +25,7 @@ use std::ops::{Add, Mul};
 /// # Examples
 ///
 /// ```
-/// use nolan::grids::linspace;
+/// use hyperjet::grids::linspace;
 ///
 /// assert_eq!(linspace(0.0, 1.0, 3), vec![0.0, 0.5, 1.0]);
 /// assert_eq!(linspace(0.0, 1.0, 1), vec![0.0]);
@@ -67,7 +67,7 @@ pub fn linspace(min: f64, max: f64, n: usize) -> Vec<f64> {
 /// # Examples
 ///
 /// ```
-/// use nolan::grids::logspace;
+/// use hyperjet::grids::logspace;
 ///
 /// let g = logspace(1.0, 100.0, 3);
 /// assert!((g[0] - 1.0).abs() < 1e-12);
@@ -124,7 +124,7 @@ pub fn logspace(min: f64, max: f64, n: usize) -> Vec<f64> {
 /// # Examples
 ///
 /// ```
-/// use nolan::grids::linear_clamped;
+/// use hyperjet::grids::linear_clamped;
 ///
 /// let xs = [0.0, 1.0, 2.0];
 /// let ys = [10.0, 20.0, 25.0];

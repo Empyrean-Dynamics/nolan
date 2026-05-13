@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use nolan::jets::{Jet2, Jet3, hess_size, tens_size};
-    use nolan::traits::AutoDiff;
+    use hyperjet::jets::{Jet2, Jet3, hess_size, tens_size};
+    use hyperjet::traits::AutoDiff;
 
     #[test]
     fn test_univariate_polynomial() {
@@ -170,15 +170,15 @@ mod tests {
         assert!((result.tens[0]).abs() < 1e-10); // tens_index(0,0,0) = 0
 
         // d^3f/dx^2dy = 6y^2 = 24
-        let idx_xxy = nolan::jets::tens_index(1, 0, 0).unwrap(); // (1,0,0) = d/dy d/dx d/dx
+        let idx_xxy = hyperjet::jets::tens_index(1, 0, 0).unwrap(); // (1,0,0) = d/dy d/dx d/dx
         assert!((result.tens[idx_xxy] - 24.0).abs() < 1e-10);
 
         // d^3f/dxdy^2 = 12xy = 24
-        let idx_xyy = nolan::jets::tens_index(1, 1, 0).unwrap(); // (1,1,0)
+        let idx_xyy = hyperjet::jets::tens_index(1, 1, 0).unwrap(); // (1,1,0)
         assert!((result.tens[idx_xyy] - 24.0).abs() < 1e-10);
 
         // d^3f/dy^3 = 6x^2 = 6
-        let idx_yyy = nolan::jets::tens_index(1, 1, 1).unwrap(); // (1,1,1)
+        let idx_yyy = hyperjet::jets::tens_index(1, 1, 1).unwrap(); // (1,1,1)
         assert!((result.tens[idx_yyy] - 6.0).abs() < 1e-10);
     }
 
@@ -194,13 +194,13 @@ mod tests {
         assert_eq!(result.value, 30.0);
 
         // d^3f/dxdydz = 1
-        let idx_xyz = nolan::jets::tens_index(2, 1, 0).unwrap();
+        let idx_xyz = hyperjet::jets::tens_index(2, 1, 0).unwrap();
         assert!((result.tens[idx_xyz] - 1.0).abs() < 1e-10);
 
         // All pure third derivatives are zero
-        assert!((result.tens[nolan::jets::tens_index(0, 0, 0).unwrap()]).abs() < 1e-10);
-        assert!((result.tens[nolan::jets::tens_index(1, 1, 1).unwrap()]).abs() < 1e-10);
-        assert!((result.tens[nolan::jets::tens_index(2, 2, 2).unwrap()]).abs() < 1e-10);
+        assert!((result.tens[hyperjet::jets::tens_index(0, 0, 0).unwrap()]).abs() < 1e-10);
+        assert!((result.tens[hyperjet::jets::tens_index(1, 1, 1).unwrap()]).abs() < 1e-10);
+        assert!((result.tens[hyperjet::jets::tens_index(2, 2, 2).unwrap()]).abs() < 1e-10);
     }
 
     #[test]
@@ -215,7 +215,7 @@ mod tests {
         let z = Jet3::<3, { hess_size(3) }, { tens_size(3) }>::variable(3.0, 2);
         let result = f(x, y, z);
 
-        use nolan::traits::ThirdOrder;
+        use hyperjet::traits::ThirdOrder;
         // Verify symmetry: t(i,j,k) should be invariant under all permutations
         for i in 0..3 {
             for j in 0..3 {

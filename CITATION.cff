@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "nolan (hyperjet): const-generic forward-mode automatic differentiation"
+authors:
+  - family-names: Moeyens
+    given-names: Joachim
+    orcid: "https://orcid.org/0000-0001-5820-3925"
+version: 1.7.0
+date-released: 2026-05-13
+url: "https://github.com/Empyrean-Dynamics/nolan"
+repository-code: "https://github.com/Empyrean-Dynamics/nolan"
+license: BSD-3-Clause
+keywords:
+  - automatic differentiation
+  - hyperdual numbers
+  - forward mode
+  - jets
+  - Rust
+  - numerical methods
+  - sensitivity analysis

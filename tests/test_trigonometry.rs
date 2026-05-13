@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use nolan::jets::{Jet2, Jet3, hess_size, tens_size};
-    use nolan::traits::AutoDiff;
+    use hyperjet::jets::{Jet2, Jet3, hess_size, tens_size};
+    use hyperjet::traits::AutoDiff;
 
     #[test]
     fn test_sin() {

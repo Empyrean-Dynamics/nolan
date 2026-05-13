@@ -21,7 +21,7 @@
 //! # Examples
 //!
 //! ```
-//! use nolan::angles::{wrap_pi, wrap_180};
+//! use hyperjet::angles::{wrap_pi, wrap_180};
 //! use std::f64::consts::PI;
 //!
 //! // Differences across the wrap boundary come out correctly.
@@ -38,7 +38,7 @@
 /// # Examples
 ///
 /// ```
-/// use nolan::angles::wrap_pi;
+/// use hyperjet::angles::wrap_pi;
 /// use std::f64::consts::PI;
 ///
 /// assert!((wrap_pi(0.0) - 0.0).abs() < 1e-15);
@@ -63,7 +63,7 @@ pub fn wrap_pi(x: f64) -> f64 {
 /// # Examples
 ///
 /// ```
-/// use nolan::angles::wrap_2pi;
+/// use hyperjet::angles::wrap_2pi;
 /// use std::f64::consts::{PI, TAU};
 ///
 /// assert!((wrap_2pi(0.0) - 0.0).abs() < 1e-15);
@@ -88,7 +88,7 @@ pub fn wrap_2pi(x: f64) -> f64 {
 /// # Examples
 ///
 /// ```
-/// use nolan::angles::wrap_180;
+/// use hyperjet::angles::wrap_180;
 ///
 /// assert!((wrap_180(0.0) - 0.0).abs() < 1e-12);
 /// assert!((wrap_180(180.0) - 180.0).abs() < 1e-12);    // exactly 180° preserved
@@ -112,7 +112,7 @@ pub fn wrap_180(x: f64) -> f64 {
 /// # Examples
 ///
 /// ```
-/// use nolan::angles::wrap_360;
+/// use hyperjet::angles::wrap_360;
 ///
 /// assert!((wrap_360(0.0) - 0.0).abs() < 1e-12);
 /// assert!((wrap_360(360.0) - 0.0).abs() < 1e-12);   // exactly 360° wraps to 0°

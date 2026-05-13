@@ -617,7 +617,7 @@ mod tests {
                 [0.5 * alpha, 3.0 * alpha, 0.2 * alpha],
                 [0.0, 0.2 * alpha, 1.0 * alpha],
             ];
-            let b = [1.0_f64 * alpha, 0.0, -1.0 * alpha];
+            let b: [f64; 3] = [alpha, 0.0, -alpha];
             let x = mat3_solve(&a, &b).expect("solvable");
             for i in 0..3 {
                 let mut s = 0.0;

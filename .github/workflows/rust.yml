@@ -31,6 +31,28 @@ jobs:
           cargo fmt -- --check
           cargo clippy --all-targets --all-features
 
+      # Keep Cargo.toml and CITATION.cff versions in lockstep — they are
+      # both load-bearing at tag time (the release workflow refuses to tag
+      # if they disagree). Catching the mismatch here surfaces it on the
+      # PR that bumps the version, not after the tag has already been cut.
+      - name: Verify Cargo.toml and CITATION.cff versions agree
+        run: |
+          cargo_version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          citation_version=$(awk '/^version:/ {print $2; exit}' CITATION.cff)
+          if [ "$cargo_version" != "$citation_version" ]; then
+            echo "::error::Cargo.toml version ${cargo_version} does not match CITATION.cff version ${citation_version}"
+            exit 1
+          fi
+
+      # Verify the crate packages cleanly for crates.io — exercises the
+      # same tarball-then-build path the release workflow's `cargo publish`
+      # uses, but without uploading. Catches packaging errors (missing
+      # files in `include = `, broken manifest, unpublishable path deps)
+      # on the PR that introduces them rather than at tag time when the
+      # cost of a bad tag is much higher.
+      - name: Package check (cargo publish --dry-run)
+        run: cargo publish --dry-run
+
   # ── Test ────────────────────────────────────────────────────────
   test:
     name: Test (${{ matrix.profile }})
