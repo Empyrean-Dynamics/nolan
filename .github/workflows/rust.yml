@@ -33,9 +33,17 @@ jobs:
 
   # ── Test ────────────────────────────────────────────────────────
   test:
-    name: Test
+    name: Test (${{ matrix.profile }})
     needs: build-lint
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: debug
+            test_flags: ""
+          - profile: release
+            test_flags: "--release"
     steps:
       - uses: actions/checkout@v4
 
@@ -45,7 +53,7 @@ jobs:
           rustflags: ""
 
       - name: Unit tests
-        run: cargo test --verbose
+        run: cargo test --verbose ${{ matrix.test_flags }}
 
   # ── Benchmark: Criterion with baseline comparison ───────────────
   benchmark:
