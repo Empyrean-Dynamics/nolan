@@ -1,17 +1,46 @@
+use crate::linalg::{NOLAN_MIN_SCALE, NOLAN_REL_TOL};
 use crate::traits::DifferentiableMath;
 
+/// Row-infinity norms of an \\(N \times N\\) matrix, taking `.value()` to
+/// drop Jet partials before comparison.
+#[inline]
+#[allow(clippy::needless_range_loop)]
+fn row_inf_norms<T: Copy + DifferentiableMath, const N: usize>(a: &[[T; N]; N]) -> [f64; N] {
+    std::array::from_fn(|i| {
+        let mut max = 0.0_f64;
+        for j in 0..N {
+            let v = a[i][j].value().abs();
+            if v > max {
+                max = v;
+            }
+        }
+        max
+    })
+}
+
 /// Solve \\(A \mathbf{x} = \mathbf{b}\\) for an \\(N \times N\\) system via Gauss–Jordan
-/// elimination with partial pivoting.
+/// elimination with **scaled partial pivoting**.
 ///
 /// Uses `Vec<Vec<T>>` for the augmented matrix since `N+1` cannot be expressed
-/// as a const generic on stable Rust. Returns `None` if the matrix is singular
-/// (pivot magnitude below \\(10^{-30}\\)).
+/// as a const generic on stable Rust.
+///
+/// Pivoting picks the row maximising the ratio
+/// \\(|a_{ik}| / \max_j |a_{ij}|\\) over the active sub-matrix, which is
+/// robust to mixed-scale rows where a plain absolute-value pivot would
+/// pick a row whose pivot is only large because the entire row is large.
+/// Returns `None` if the largest scaled pivot ratio falls below
+/// [`NOLAN_REL_TOL`].
 #[allow(clippy::needless_range_loop)]
 pub fn mat_solve<T: Copy + DifferentiableMath, const N: usize>(
     a: &[[T; N]; N],
     b: &[T; N],
 ) -> Option<[T; N]> {
     let zero = T::constant(0.0);
+    let mut s = row_inf_norms(a);
+    if s.iter().all(|x| *x < NOLAN_MIN_SCALE) {
+        return None;
+    }
+
     // Augmented matrix [A | b]
     let mut m: Vec<Vec<T>> = (0..N)
         .map(|i| {
@@ -23,20 +52,24 @@ pub fn mat_solve<T: Copy + DifferentiableMath, const N: usize>(
         .collect();
 
     for col in 0..N {
-        let mut max_row = col;
-        let mut max_val = m[col][col].value().abs();
-        for row in (col + 1)..N {
-            let v = m[row][col].value().abs();
-            if v > max_val {
-                max_val = v;
-                max_row = row;
+        let mut best_ratio = 0.0;
+        let mut best_row = col;
+        for i in col..N {
+            if s[i] < NOLAN_MIN_SCALE {
+                continue;
+            }
+            let ratio = m[i][col].value().abs() / s[i];
+            if ratio > best_ratio {
+                best_ratio = ratio;
+                best_row = i;
             }
         }
-        if max_val < 1e-30 {
+        if best_ratio < NOLAN_REL_TOL {
             return None;
         }
-        if max_row != col {
-            m.swap(col, max_row);
+        if best_row != col {
+            m.swap(col, best_row);
+            s.swap(col, best_row);
         }
 
         let pivot = m[col][col];
@@ -62,17 +95,22 @@ pub fn mat_solve<T: Copy + DifferentiableMath, const N: usize>(
     Some(x)
 }
 
-/// Invert an \\(N \times N\\) matrix via Gauss–Jordan elimination with partial pivoting.
+/// Invert an \\(N \times N\\) matrix via Gauss–Jordan elimination with
+/// **scaled partial pivoting**.
 ///
-/// Uses `Vec<Vec<T>>` for the augmented matrix since `2*N` cannot be expressed
-/// as a const generic on stable Rust. Returns `None` if the matrix is singular
-/// (pivot magnitude below \\(10^{-30}\\)).
+/// See [`mat_solve`] for the pivoting strategy. Returns `None` if the
+/// largest scaled pivot ratio falls below [`NOLAN_REL_TOL`].
 #[allow(clippy::needless_range_loop)]
 pub fn mat_inv<T: Copy + DifferentiableMath, const N: usize>(
     a: &[[T; N]; N],
 ) -> Option<[[T; N]; N]> {
     let zero = T::constant(0.0);
     let one = T::constant(1.0);
+    let mut s = row_inf_norms(a);
+    if s.iter().all(|x| *x < NOLAN_MIN_SCALE) {
+        return None;
+    }
+
     // Augmented matrix [A | I]
     let mut m: Vec<Vec<T>> = (0..N)
         .map(|i| {
@@ -84,20 +122,24 @@ pub fn mat_inv<T: Copy + DifferentiableMath, const N: usize>(
         .collect();
 
     for col in 0..N {
-        let mut max_row = col;
-        let mut max_val = m[col][col].value().abs();
-        for row in (col + 1)..N {
-            let v = m[row][col].value().abs();
-            if v > max_val {
-                max_val = v;
-                max_row = row;
+        let mut best_ratio = 0.0;
+        let mut best_row = col;
+        for i in col..N {
+            if s[i] < NOLAN_MIN_SCALE {
+                continue;
+            }
+            let ratio = m[i][col].value().abs() / s[i];
+            if ratio > best_ratio {
+                best_ratio = ratio;
+                best_row = i;
             }
         }
-        if max_val < 1e-30 {
+        if best_ratio < NOLAN_REL_TOL {
             return None;
         }
-        if max_row != col {
-            m.swap(col, max_row);
+        if best_row != col {
+            m.swap(col, best_row);
+            s.swap(col, best_row);
         }
 
         let pivot = m[col][col];
@@ -557,24 +599,32 @@ pub fn mat_symmetric_eigen<const N: usize>(a: &[[f64; N]; N]) -> Option<([f64; N
 #[allow(clippy::needless_range_loop)]
 pub fn mat_det<const N: usize>(a: &[[f64; N]; N]) -> f64 {
     let mut lu = *a;
+    let mut s = row_inf_norms(a);
+    if s.iter().all(|x| *x < NOLAN_MIN_SCALE) {
+        return 0.0;
+    }
     let mut sign = 1.0;
     let mut det = 1.0;
 
     for col in 0..N {
-        let mut max_row = col;
-        let mut max_val = lu[col][col].abs();
-        for row in (col + 1)..N {
-            let v = lu[row][col].abs();
-            if v > max_val {
-                max_val = v;
-                max_row = row;
+        let mut best_ratio = 0.0;
+        let mut best_row = col;
+        for i in col..N {
+            if s[i] < NOLAN_MIN_SCALE {
+                continue;
+            }
+            let ratio = lu[i][col].abs() / s[i];
+            if ratio > best_ratio {
+                best_ratio = ratio;
+                best_row = i;
             }
         }
-        if max_val < 1e-300 {
+        if best_ratio < NOLAN_REL_TOL {
             return 0.0;
         }
-        if max_row != col {
-            lu.swap(col, max_row);
+        if best_row != col {
+            lu.swap(col, best_row);
+            s.swap(col, best_row);
             sign = -sign;
         }
 
@@ -1402,5 +1452,103 @@ mod tests {
                 assert_eq!(c[i][j], c[j][i]);
             }
         }
+    }
+
+    // ── Phase 1.5A-Gauss: scaled partial pivoting ──────────────────
+
+    /// Canonical Numerical Recipes §2.5 scaled-pivoting test case.
+    /// Plain partial pivoting picks row 0 (|a[0][0]| = 1) because |a[0][0]|
+    /// happens to equal |a[1][0]| = 1. The row-0 elimination introduces
+    /// a 1e10-scaled subtraction that destroys digits in row 1. Scaled
+    /// pivoting picks row 1 (scaled by 1 vs scaled by 1e10), preserving
+    /// precision.
+    #[test]
+    fn test_mat_solve_2x2_scaled_pivot_canonical() {
+        let a: [[f64; 2]; 2] = [[1.0, 1e10], [1.0, 1.0]];
+        let b: [f64; 2] = [1e10, 2.0];
+        let x = mat_solve::<f64, 2>(&a, &b).expect("solvable");
+        // True solution: x₂ = (2·1 − 1e10·1)/(1·1 − 1e10·1) ≈ 1, x₁ = 2 − x₂ ≈ 1.
+        assert!((x[0] - 1.0).abs() < 1e-9, "x[0] = {}", x[0]);
+        assert!((x[1] - 1.0).abs() < 1e-9, "x[1] = {}", x[1]);
+    }
+
+    #[test]
+    fn test_mat_solve_round_trip_wide_dynamic_range() {
+        // For each scale α ∈ {1e-20, 1e-10, 1, 1e5, 1e10}, solve a 3×3
+        // well-conditioned scaled identity and verify A·x ≈ b.
+        let scales = [1e-20_f64, 1e-10, 1.0, 1e5, 1e10];
+        for &alpha in &scales {
+            let a = [
+                [2.0 * alpha, 0.5 * alpha, 0.0],
+                [0.5 * alpha, 3.0 * alpha, 0.2 * alpha],
+                [0.0, 0.2 * alpha, 1.0 * alpha],
+            ];
+            let b = [1.0_f64 * alpha, 0.0, -1.0 * alpha];
+            let x = mat_solve::<f64, 3>(&a, &b).expect("solvable");
+            // A·x ≈ b
+            for i in 0..3 {
+                let mut s = 0.0;
+                for j in 0..3 {
+                    s += a[i][j] * x[j];
+                }
+                let rel_err = (s - b[i]).abs() / b[i].abs().max(alpha);
+                assert!(
+                    rel_err < 1e-12,
+                    "α={alpha}: A·x = {s}, b = {} (rel = {rel_err})",
+                    b[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_mat_inv_round_trip_wide_dynamic_range() {
+        let scales = [1e-20_f64, 1.0, 1e10];
+        for &alpha in &scales {
+            let a = [[2.0 * alpha, 0.5 * alpha], [0.5 * alpha, 3.0 * alpha]];
+            let inv = mat_inv::<f64, 2>(&a).expect("invertible");
+            // A·A⁻¹ ≈ I
+            let product = mat_mul::<2, 2, 2>(&a, &inv);
+            for i in 0..2 {
+                for j in 0..2 {
+                    let target = if i == j { 1.0 } else { 0.0 };
+                    assert!(
+                        (product[i][j] - target).abs() < 1e-12,
+                        "α={alpha}: (A·A⁻¹)[{i}][{j}] = {} vs {target}",
+                        product[i][j]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_mat_solve_singular_returns_none() {
+        // Rank-1 matrix [[1,1],[1,1]] is singular.
+        let a: [[f64; 2]; 2] = [[1.0, 1.0], [1.0, 1.0]];
+        let b: [f64; 2] = [1.0, 1.0];
+        assert!(mat_solve::<f64, 2>(&a, &b).is_none());
+    }
+
+    #[test]
+    fn test_mat_solve_mixed_scale_rows() {
+        // Row 0 at scale 1e10, row 1 at scale 1e-15. Scaled pivoting
+        // prevents a 1e25 amplification of roundoff that plain partial
+        // pivoting would suffer.
+        let a: [[f64; 2]; 2] = [[1e10, 1e10], [1e-15, 2e-15]];
+        let b: [f64; 2] = [2e10, 1.5e-15];
+        let x = mat_solve::<f64, 2>(&a, &b).expect("solvable");
+        // True solution: 1e-15·x₀ + 2e-15·x₁ = 1.5e-15  =>  x₀ + 2x₁ = 1.5
+        //                1e10·x₀  + 1e10·x₁  = 2e10     =>  x₀ +  x₁ = 2
+        // Subtract: x₁ = -0.5, x₀ = 2.5.
+        assert!((x[0] - 2.5).abs() < 1e-9, "x[0] = {}", x[0]);
+        assert!((x[1] - (-0.5)).abs() < 1e-9, "x[1] = {}", x[1]);
+    }
+
+    #[test]
+    fn test_mat_solve_all_zero_returns_none() {
+        let a: [[f64; 3]; 3] = [[0.0; 3]; 3];
+        let b: [f64; 3] = [1.0, 2.0, 3.0];
+        assert!(mat_solve::<f64, 3>(&a, &b).is_none());
     }
 }

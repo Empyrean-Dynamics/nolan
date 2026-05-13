@@ -1,3 +1,4 @@
+use crate::linalg::{NOLAN_MIN_SCALE, NOLAN_REL_TOL};
 use crate::traits::DifferentiableMath;
 
 /// Multiply two \\(6 \times 6\\) matrices: \\(C = A \, B\\).
@@ -74,12 +75,27 @@ pub fn mat6_symmetrize<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6]) -> [[T; 6]
 }
 
 /// Solve \\(A \mathbf{x} = \mathbf{b}\\) for a \\(6 \times 6\\) system via Gauss–Jordan
-/// elimination with partial pivoting.
+/// elimination with **scaled partial pivoting** (see [`crate::linalg::generic::mat_solve`]).
 ///
-/// Returns `None` if the matrix is singular (pivot magnitude below \\(10^{-30}\\)).
+/// Returns `None` if the largest scaled pivot ratio falls below
+/// [`crate::linalg::NOLAN_REL_TOL`].
 #[allow(clippy::needless_range_loop)]
 pub fn mat6_solve<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6], b: &[T; 6]) -> Option<[T; 6]> {
     let zero = T::constant(0.0);
+    let mut s: [f64; 6] = std::array::from_fn(|i| {
+        let mut max = 0.0_f64;
+        for j in 0..6 {
+            let v = a[i][j].value().abs();
+            if v > max {
+                max = v;
+            }
+        }
+        max
+    });
+    if s.iter().all(|x| *x < NOLAN_MIN_SCALE) {
+        return None;
+    }
+
     // Augmented matrix [A | b]
     let mut m = [[zero; 7]; 6];
     for i in 0..6 {
@@ -90,21 +106,24 @@ pub fn mat6_solve<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6], b: &[T; 6]) -> 
     }
 
     for col in 0..6 {
-        // Partial pivoting: find row with largest |value| in this column.
-        let mut max_row = col;
-        let mut max_val = m[col][col].value().abs();
-        for row in (col + 1)..6 {
-            let v = m[row][col].value().abs();
-            if v > max_val {
-                max_val = v;
-                max_row = row;
+        let mut best_ratio = 0.0;
+        let mut best_row = col;
+        for i in col..6 {
+            if s[i] < NOLAN_MIN_SCALE {
+                continue;
+            }
+            let ratio = m[i][col].value().abs() / s[i];
+            if ratio > best_ratio {
+                best_ratio = ratio;
+                best_row = i;
             }
         }
-        if max_val < 1e-30 {
+        if best_ratio < NOLAN_REL_TOL {
             return None;
         }
-        if max_row != col {
-            m.swap(col, max_row);
+        if best_row != col {
+            m.swap(col, best_row);
+            s.swap(col, best_row);
         }
 
         // Scale pivot row
@@ -132,13 +151,29 @@ pub fn mat6_solve<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6], b: &[T; 6]) -> 
     Some(x)
 }
 
-/// Invert a \\(6 \times 6\\) matrix via Gauss–Jordan elimination with partial pivoting.
+/// Invert a \\(6 \times 6\\) matrix via Gauss–Jordan elimination with
+/// **scaled partial pivoting** (see [`crate::linalg::generic::mat_inv`]).
 ///
-/// Returns `None` if the matrix is singular (pivot magnitude below \\(10^{-30}\\)).
+/// Returns `None` if the largest scaled pivot ratio falls below
+/// [`crate::linalg::NOLAN_REL_TOL`].
 #[allow(clippy::needless_range_loop)]
 pub fn mat6_inv<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6]) -> Option<[[T; 6]; 6]> {
     let zero = T::constant(0.0);
     let one = T::constant(1.0);
+    let mut s: [f64; 6] = std::array::from_fn(|i| {
+        let mut max = 0.0_f64;
+        for j in 0..6 {
+            let v = a[i][j].value().abs();
+            if v > max {
+                max = v;
+            }
+        }
+        max
+    });
+    if s.iter().all(|x| *x < NOLAN_MIN_SCALE) {
+        return None;
+    }
+
     // Augmented matrix [A | I]
     let mut m = [[zero; 12]; 6];
     for i in 0..6 {
@@ -149,20 +184,24 @@ pub fn mat6_inv<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6]) -> Option<[[T; 6]
     }
 
     for col in 0..6 {
-        let mut max_row = col;
-        let mut max_val = m[col][col].value().abs();
-        for row in (col + 1)..6 {
-            let v = m[row][col].value().abs();
-            if v > max_val {
-                max_val = v;
-                max_row = row;
+        let mut best_ratio = 0.0;
+        let mut best_row = col;
+        for i in col..6 {
+            if s[i] < NOLAN_MIN_SCALE {
+                continue;
+            }
+            let ratio = m[i][col].value().abs() / s[i];
+            if ratio > best_ratio {
+                best_ratio = ratio;
+                best_row = i;
             }
         }
-        if max_val < 1e-30 {
+        if best_ratio < NOLAN_REL_TOL {
             return None;
         }
-        if max_row != col {
-            m.swap(col, max_row);
+        if best_row != col {
+            m.swap(col, best_row);
+            s.swap(col, best_row);
         }
 
         let pivot = m[col][col];
@@ -191,6 +230,8 @@ pub fn mat6_inv<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6]) -> Option<[[T; 6]
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_range_loop)]
+#[allow(clippy::assign_op_pattern)]
 mod tests {
     use super::*;
     use crate::jets::Jet1;
@@ -395,5 +436,38 @@ mod tests {
         assert!((x[0].value() - 0.5).abs() < 1e-14);
         // d(x[0])/d(a[0][0]) = d(1/a00)/da00 * b[0] = -1/a00^2 = -1/4
         assert!((x[0].grad(0) - (-0.25)).abs() < 1e-14);
+    }
+
+    /// Mat6 analogue of the canonical Numerical Recipes §2.5 scaled-pivoting
+    /// test from `generic::tests::test_mat_solve_2x2_scaled_pivot_canonical`.
+    /// Plain partial pivoting would amplify roundoff; scaled pivoting
+    /// preserves precision.
+    #[test]
+    fn test_mat6_solve_scaled_pivot_mixed_scale() {
+        // Diagonal block of mixed scale: rows 0,1 at scale 1e10; rows 2-5
+        // at scale 1. The 2×2 block `[[1, 1e10], [1, 1]]` would need scaled
+        // pivoting to avoid catastrophic cancellation in row 1; the
+        // remaining 4×4 is identity to keep the solution computable by hand.
+        let mut a = [[0.0_f64; 6]; 6];
+        a[0][0] = 1.0;
+        a[0][1] = 1e10;
+        a[1][0] = 1.0;
+        a[1][1] = 1.0;
+        for i in 2..6 {
+            a[i][i] = 1.0;
+        }
+        let mut b = [0.0; 6];
+        b[0] = 1e10;
+        b[1] = 2.0;
+        for i in 2..6 {
+            b[i] = i as f64;
+        }
+        let x = mat6_solve::<f64>(&a, &b).expect("solvable");
+        // Block solution: x[0]=x[1]=1; identity rows: x[i]=i.
+        assert!((x[0] - 1.0).abs() < 1e-8, "x[0] = {}", x[0]);
+        assert!((x[1] - 1.0).abs() < 1e-8, "x[1] = {}", x[1]);
+        for i in 2..6 {
+            assert!((x[i] - i as f64).abs() < 1e-12, "x[{i}] = {}", x[i]);
+        }
     }
 }

@@ -1,3 +1,4 @@
+use crate::linalg::NOLAN_REL_TOL;
 use crate::traits::DifferentiableMath;
 
 /// Multiply two \\(3 \times 3\\) matrices: \\(C = A \, B\\).
@@ -45,12 +46,37 @@ pub fn mat3_transpose_vec_mul<T: Copy + DifferentiableMath>(a: &[[T; 3]; 3], x: 
 
 /// Invert a \\(3 \times 3\\) matrix via the adjugate (cofactor) method.
 ///
-/// Returns `None` if the matrix is singular (\\(|\det A| < 10^{-100}\\)).
+/// Returns `None` if the matrix is singular at scaled-relative
+/// tolerance: \\(|\det A| < \text{REL\\_TOL} \cdot \max_{ij}|A_{ij}|^3\\).
+/// The cubic scale follows from \\(\det A\\) being a sum of triple
+/// products of entries.
+///
+/// # When to use this vs `mat_inv::<3>`
+///
+/// Cramer's rule (this function) is faster and bit-exact for
+/// well-conditioned 3×3 inputs but accumulates roundoff proportional
+/// to \\(\kappa(A)\\) without any pivot-based mitigation. For
+/// marginally-conditioned matrices — covariances whose smallest
+/// eigenvalue is within 4–6 orders of magnitude of the largest, or
+/// matrices feeding into squared accumulators like
+/// \\(H^\top W H\\) — route through [`crate::linalg::generic::mat_inv`]
+/// with `N = 3` instead: scaled partial pivoting halves the worst-case
+/// roundoff at the cost of one extra division per row.
 pub fn mat3_inv<T: Copy + DifferentiableMath>(m: &[[T; 3]; 3]) -> Option<[[T; 3]; 3]> {
     let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
         - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-    if det.value().abs() < 1e-100 {
+    let mut max_entry = 0.0_f64;
+    for row in m {
+        for v in row {
+            let abs_v = v.value().abs();
+            if abs_v > max_entry {
+                max_entry = abs_v;
+            }
+        }
+    }
+    let scale = max_entry.powi(3).max(f64::MIN_POSITIVE);
+    if det.value().abs() < NOLAN_REL_TOL * scale {
         return None;
     }
     let d = T::constant(1.0) / det;
@@ -75,12 +101,23 @@ pub fn mat3_inv<T: Copy + DifferentiableMath>(m: &[[T; 3]; 3]) -> Option<[[T; 3]
 
 /// Solve \\(A \mathbf{x} = \mathbf{b}\\) for a \\(3 \times 3\\) system via Cramer's rule.
 ///
-/// Returns `None` if the matrix is singular (\\(|\det A| < 10^{-100}\\)).
+/// Returns `None` if the matrix is singular at scaled-relative
+/// tolerance: \\(|\det A| < \text{REL\\_TOL} \cdot \max_{ij}|A_{ij}|^3\\).
 pub fn mat3_solve<T: Copy + DifferentiableMath>(a: &[[T; 3]; 3], b: &[T; 3]) -> Option<[T; 3]> {
     let det_a = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
         - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
         + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
-    if det_a.value().abs() < 1e-100 {
+    let mut max_entry = 0.0_f64;
+    for row in a {
+        for v in row {
+            let abs_v = v.value().abs();
+            if abs_v > max_entry {
+                max_entry = abs_v;
+            }
+        }
+    }
+    let scale = max_entry.powi(3).max(f64::MIN_POSITIVE);
+    if det_a.value().abs() < NOLAN_REL_TOL * scale {
         return None;
     }
     let inv_det = T::constant(1.0) / det_a;
@@ -443,5 +480,78 @@ mod tests {
         let e = sym_eigenvalues_3(&a);
         let sum: f64 = e.iter().sum();
         assert!((sum - trace).abs() < 1e-12);
+    }
+
+    // ── Phase 1.5A-Cramer: relative determinant guard ──────────────
+
+    #[test]
+    fn test_mat3_inv_small_scale_roundtrip() {
+        // A = 1e-10 · I → A⁻¹ = 1e10 · I. Passes today's 1e-100 absolute
+        // threshold trivially but exercises the new relative-scaled guard.
+        let alpha = 1e-10_f64;
+        let a = [[alpha, 0.0, 0.0], [0.0, alpha, 0.0], [0.0, 0.0, alpha]];
+        let inv = mat3_inv(&a).expect("invertible");
+        let expected = 1.0 / alpha;
+        for i in 0..3 {
+            for j in 0..3 {
+                let target = if i == j { expected } else { 0.0 };
+                let rel = if target != 0.0 {
+                    (inv[i][j] - target).abs() / target.abs()
+                } else {
+                    inv[i][j].abs()
+                };
+                assert!(rel < 1e-12, "({i},{j}): {} vs {target}", inv[i][j]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_mat3_inv_rank_deficient_returns_none() {
+        // Row 2 = 2*row 0 → rank-deficient → singular.
+        let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [2.0, 4.0, 6.0]];
+        assert!(mat3_inv(&a).is_none());
+    }
+
+    #[test]
+    fn test_mat3_solve_rank_deficient_returns_none() {
+        let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [2.0, 4.0, 6.0]];
+        let b = [1.0, 2.0, 3.0];
+        assert!(mat3_solve(&a, &b).is_none());
+    }
+
+    #[test]
+    fn test_mat3_solve_round_trip_wide_dynamic_range() {
+        // Verify Cramer's rule still works across [1e-20, 1e10] scales.
+        let scales = [1e-20_f64, 1.0, 1e10];
+        for &alpha in &scales {
+            let a = [
+                [2.0 * alpha, 0.5 * alpha, 0.0],
+                [0.5 * alpha, 3.0 * alpha, 0.2 * alpha],
+                [0.0, 0.2 * alpha, 1.0 * alpha],
+            ];
+            let b = [1.0_f64 * alpha, 0.0, -1.0 * alpha];
+            let x = mat3_solve(&a, &b).expect("solvable");
+            for i in 0..3 {
+                let mut s = 0.0;
+                for j in 0..3 {
+                    s += a[i][j] * x[j];
+                }
+                let denom = b[i].abs().max(alpha);
+                let rel_err = (s - b[i]).abs() / denom;
+                assert!(rel_err < 1e-12, "α={alpha}, i={i}: rel = {rel_err}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_mat3_inv_extremely_small_scale_still_invertible() {
+        // A = 1e-100 · I → |det| = 1e-300, max_entry^3 = 1e-300.
+        // Ratio = 1, which is well above NOLAN_REL_TOL — but max_entry^3
+        // floors to MIN_POSITIVE, so this still passes the guard.
+        let alpha = 1e-100_f64;
+        let a = [[alpha, 0.0, 0.0], [0.0, alpha, 0.0], [0.0, 0.0, alpha]];
+        // Should succeed: relative-singularity guard does not over-reject.
+        let inv = mat3_inv(&a).expect("invertible");
+        assert!((inv[0][0] - 1.0 / alpha).abs() / (1.0 / alpha) < 1e-12);
     }
 }

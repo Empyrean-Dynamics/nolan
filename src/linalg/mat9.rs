@@ -1,3 +1,4 @@
+use crate::linalg::{NOLAN_MIN_SCALE, NOLAN_REL_TOL};
 use crate::traits::DifferentiableMath;
 
 /// Multiply two \\(9 \times 9\\) matrices: \\(C = A \, B\\).
@@ -74,12 +75,27 @@ pub fn mat9_symmetrize<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9]) -> [[T; 9]
 }
 
 /// Solve \\(A \mathbf{x} = \mathbf{b}\\) for a \\(9 \times 9\\) system via Gauss–Jordan
-/// elimination with partial pivoting.
+/// elimination with **scaled partial pivoting** (see [`crate::linalg::generic::mat_solve`]).
 ///
-/// Returns `None` if the matrix is singular (pivot magnitude below \\(10^{-30}\\)).
+/// Returns `None` if the largest scaled pivot ratio falls below
+/// [`crate::linalg::NOLAN_REL_TOL`].
 #[allow(clippy::needless_range_loop)]
 pub fn mat9_solve<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9], b: &[T; 9]) -> Option<[T; 9]> {
     let zero = T::constant(0.0);
+    let mut s: [f64; 9] = std::array::from_fn(|i| {
+        let mut max = 0.0_f64;
+        for j in 0..9 {
+            let v = a[i][j].value().abs();
+            if v > max {
+                max = v;
+            }
+        }
+        max
+    });
+    if s.iter().all(|x| *x < NOLAN_MIN_SCALE) {
+        return None;
+    }
+
     // Augmented matrix [A | b]
     let mut m = [[zero; 10]; 9];
     for i in 0..9 {
@@ -90,20 +106,24 @@ pub fn mat9_solve<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9], b: &[T; 9]) -> 
     }
 
     for col in 0..9 {
-        let mut max_row = col;
-        let mut max_val = m[col][col].value().abs();
-        for row in (col + 1)..9 {
-            let v = m[row][col].value().abs();
-            if v > max_val {
-                max_val = v;
-                max_row = row;
+        let mut best_ratio = 0.0;
+        let mut best_row = col;
+        for i in col..9 {
+            if s[i] < NOLAN_MIN_SCALE {
+                continue;
+            }
+            let ratio = m[i][col].value().abs() / s[i];
+            if ratio > best_ratio {
+                best_ratio = ratio;
+                best_row = i;
             }
         }
-        if max_val < 1e-30 {
+        if best_ratio < NOLAN_REL_TOL {
             return None;
         }
-        if max_row != col {
-            m.swap(col, max_row);
+        if best_row != col {
+            m.swap(col, best_row);
+            s.swap(col, best_row);
         }
 
         let pivot = m[col][col];
@@ -129,14 +149,30 @@ pub fn mat9_solve<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9], b: &[T; 9]) -> 
     Some(x)
 }
 
-/// Invert a \\(9 \times 9\\) matrix via Gauss–Jordan elimination with partial pivoting.
+/// Invert a \\(9 \times 9\\) matrix via Gauss–Jordan elimination with
+/// **scaled partial pivoting** (see [`crate::linalg::generic::mat_inv`]).
 ///
 /// Stack-allocated augmented matrix `[[T; 18]; 9]` for performance.
-/// Returns `None` if the matrix is singular (pivot magnitude below \\(10^{-30}\\)).
+/// Returns `None` if the largest scaled pivot ratio falls below
+/// [`crate::linalg::NOLAN_REL_TOL`].
 #[allow(clippy::needless_range_loop)]
 pub fn mat9_inv<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9]) -> Option<[[T; 9]; 9]> {
     let zero = T::constant(0.0);
     let one = T::constant(1.0);
+    let mut s: [f64; 9] = std::array::from_fn(|i| {
+        let mut max = 0.0_f64;
+        for j in 0..9 {
+            let v = a[i][j].value().abs();
+            if v > max {
+                max = v;
+            }
+        }
+        max
+    });
+    if s.iter().all(|x| *x < NOLAN_MIN_SCALE) {
+        return None;
+    }
+
     // Augmented matrix [A | I]
     let mut m = [[zero; 18]; 9];
     for i in 0..9 {
@@ -147,20 +183,24 @@ pub fn mat9_inv<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9]) -> Option<[[T; 9]
     }
 
     for col in 0..9 {
-        let mut max_row = col;
-        let mut max_val = m[col][col].value().abs();
-        for row in (col + 1)..9 {
-            let v = m[row][col].value().abs();
-            if v > max_val {
-                max_val = v;
-                max_row = row;
+        let mut best_ratio = 0.0;
+        let mut best_row = col;
+        for i in col..9 {
+            if s[i] < NOLAN_MIN_SCALE {
+                continue;
+            }
+            let ratio = m[i][col].value().abs() / s[i];
+            if ratio > best_ratio {
+                best_ratio = ratio;
+                best_row = i;
             }
         }
-        if max_val < 1e-30 {
+        if best_ratio < NOLAN_REL_TOL {
             return None;
         }
-        if max_row != col {
-            m.swap(col, max_row);
+        if best_row != col {
+            m.swap(col, best_row);
+            s.swap(col, best_row);
         }
 
         let pivot = m[col][col];
@@ -189,6 +229,8 @@ pub fn mat9_inv<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9]) -> Option<[[T; 9]
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_range_loop)]
+#[allow(clippy::assign_op_pattern)]
 mod tests {
     use super::*;
     use crate::jets::Jet1;
@@ -388,5 +430,31 @@ mod tests {
         assert!((x[0].value() - 0.5).abs() < 1e-14);
         // d(x[0])/d(a[0][0]) = -b[0]/a00^2 = -1/4
         assert!((x[0].grad(0) - (-0.25)).abs() < 1e-14);
+    }
+
+    /// Mat9 analogue of the canonical Numerical Recipes §2.5 scaled-pivoting
+    /// test. Mixed-scale 2×2 block in rows 0-1, identity in rows 2-8.
+    #[test]
+    fn test_mat9_solve_scaled_pivot_mixed_scale() {
+        let mut a = [[0.0_f64; 9]; 9];
+        a[0][0] = 1.0;
+        a[0][1] = 1e10;
+        a[1][0] = 1.0;
+        a[1][1] = 1.0;
+        for i in 2..9 {
+            a[i][i] = 1.0;
+        }
+        let mut b = [0.0; 9];
+        b[0] = 1e10;
+        b[1] = 2.0;
+        for i in 2..9 {
+            b[i] = i as f64;
+        }
+        let x = mat9_solve::<f64>(&a, &b).expect("solvable");
+        assert!((x[0] - 1.0).abs() < 1e-8, "x[0] = {}", x[0]);
+        assert!((x[1] - 1.0).abs() < 1e-8, "x[1] = {}", x[1]);
+        for i in 2..9 {
+            assert!((x[i] - i as f64).abs() < 1e-12, "x[{i}] = {}", x[i]);
+        }
     }
 }
