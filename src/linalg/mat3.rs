@@ -182,7 +182,20 @@ pub fn sym_eigenvalues_3(a: &[[f64; 3]; 3]) -> [f64; 3] {
         (b00 * b00 + b11 * b11 + b22 * b22 + 2.0 * (b01 * b01 + b02 * b02 + b12 * b12)) / 6.0;
     let p = p_sq.sqrt();
 
-    if p < 1e-30 {
+    // Scaled-relative p-guard: bail when the trace-shifted matrix B is
+    // small relative to the matrix's natural scale `max(|q|, p)`. This
+    // covers three pathological cases with one expression:
+    // - near-scalar matrix (|q| ≫ p): A ≈ q·I, so p_sq ≈ 0 and
+    //   eigenvalues collapse to [q, q, q].
+    // - near-zero matrix (q ≈ 0, p ≈ 0): A ≈ 0, eigenvalues are 0.
+    // - traceless matrix with vanishing off-diagonals.
+    //
+    // The `MIN_POSITIVE` floor avoids dividing by exactly zero when the
+    // input is exactly the zero matrix. Replaces the prior absolute
+    // `p < 1e-30` threshold, which would fire spuriously on small-scale
+    // covariances (entries 1e-10 to 1e-20).
+    let scale = q.abs().max(p).max(f64::MIN_POSITIVE);
+    if p < crate::linalg::NOLAN_REL_TOL * scale {
         return [q, q, q];
     }
 
@@ -197,6 +210,13 @@ pub fn sym_eigenvalues_3(a: &[[f64; 3]; 3]) -> [f64; 3] {
         * (n00 * (n11 * n22 - n12 * n12) - n01 * (n01 * n22 - n12 * n02)
             + n02 * (n01 * n12 - n11 * n02));
 
+    // Catches sign-flip / cancellation bugs in debug builds. The
+    // 1e-10 slop is intentionally loose: f64 roundoff in this
+    // cubic-determinant computation is ~10·ε ≈ 2e-15, well within
+    // 1e-10. Tight bounds would fire on harmless roundoff; this
+    // assert fires only on logic errors (overflow, sign flip,
+    // missing absolute-value).
+    debug_assert!(r.abs() < 1.0 + 1e-10, "Kopp r out of bounds: {r}");
     let phi = if r <= -1.0 {
         FRAC_PI_3
     } else if r >= 1.0 {
@@ -480,6 +500,74 @@ mod tests {
         let e = sym_eigenvalues_3(&a);
         let sum: f64 = e.iter().sum();
         assert!((sum - trace).abs() < 1e-12);
+    }
+
+    /// Phase 2B p-guard regression: a covariance with entries scaled to
+    /// 1e-10..1e-20 (Apophis-class sub-microarcsecond uncertainty)
+    /// should produce eigenvalues that match the scaled input, not
+    /// fire the p-guard and collapse to a degenerate triple.
+    /// Pre-Phase-2B (absolute `p < 1e-30`) this case would have fired
+    /// the guard at the 1e-20 end and returned the trace-mean triple.
+    #[test]
+    fn test_sym_eigenvalues_3_small_scale_covariance() {
+        let scale = 1e-18_f64;
+        let a = [
+            [2.0 * scale, 0.5 * scale, 0.1 * scale],
+            [0.5 * scale, 3.0 * scale, 0.2 * scale],
+            [0.1 * scale, 0.2 * scale, 1.0 * scale],
+        ];
+        let e = sym_eigenvalues_3(&a);
+        // Eigenvalues should sum to trace (= 6·scale).
+        let sum: f64 = e.iter().sum();
+        assert!(
+            (sum - 6.0 * scale).abs() / (6.0 * scale) < 1e-12,
+            "trace = 6·{scale}, eigenvalue sum = {sum}"
+        );
+        // All three eigenvalues should be of order `scale` (not zero).
+        // Pre-Phase-2B the p-guard would have fired and returned
+        // [trace/3, trace/3, trace/3] = [2·scale, 2·scale, 2·scale],
+        // collapsing the spectrum. The actual spectrum has three
+        // distinct values clustered around 2·scale, all > 0.
+        for &lam in &e {
+            assert!(
+                lam.abs() > 0.5 * scale,
+                "eigenvalue {lam} collapsed (scale = {scale})"
+            );
+        }
+    }
+
+    /// Phase 2B: traceless matrix (q = 0) must still report a real
+    /// non-trivial spectrum. Pre-Phase-2B with `p < 1e-30` absolute,
+    /// this passed because p was 1.0 here. With the new scaled guard
+    /// `p < REL_TOL · max(|q|, p)` = `p < REL_TOL · p` ≈ never true for
+    /// p > 0, the eigenvalue computation proceeds.
+    #[test]
+    fn test_sym_eigenvalues_3_traceless() {
+        let a = [[1.0, 0.5, 0.0], [0.5, -1.0, 0.0], [0.0, 0.0, 0.0]];
+        let e = sym_eigenvalues_3(&a);
+        let sum: f64 = e.iter().sum();
+        // trace = 0
+        assert!(sum.abs() < 1e-12, "trace should be 0, got {sum}");
+        // Two non-zero eigenvalues (the 2×2 [[1, 0.5], [0.5, -1]] block
+        // has eigenvalues ±sqrt(1.25) ≈ ±1.118), plus the zero from the
+        // 1×1 block. The sort-by-descending-abs places the two larger
+        // ones first.
+        assert!((e[0].abs() - 5.0_f64.sqrt() / 2.0).abs() < 1e-10);
+        assert!((e[1].abs() - 5.0_f64.sqrt() / 2.0).abs() < 1e-10);
+        assert!(e[2].abs() < 1e-12);
+    }
+
+    /// Phase 2B: exact scalar matrix A = q·I must return [q, q, q]
+    /// via the p-guard (this is the "near-scalar" case the guard
+    /// catches).
+    #[test]
+    fn test_sym_eigenvalues_3_exact_scalar() {
+        let q = 2.5;
+        let a = [[q, 0.0, 0.0], [0.0, q, 0.0], [0.0, 0.0, q]];
+        let e = sym_eigenvalues_3(&a);
+        for &lam in &e {
+            assert!((lam - q).abs() < 1e-14);
+        }
     }
 
     // ── Phase 1.5A-Cramer: relative determinant guard ──────────────
