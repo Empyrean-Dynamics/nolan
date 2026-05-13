@@ -544,6 +544,99 @@ pub fn mat_symmetric_eigen<const N: usize>(a: &[[f64; N]; N]) -> Option<([f64; N
     Some((sorted_eigs, sorted_v))
 }
 
+// ── Phase 1D additions: determinant, trace-cube, Frobenius, σ_max ───
+
+/// Signed determinant of an \\(N \times N\\) matrix via LU decomposition
+/// with partial pivoting.
+///
+/// Returns `0.0` if the matrix is singular (the LU step encounters a
+/// zero pivot at scaled-relative tolerance).
+///
+/// Sign comes from the parity of row swaps; magnitude from the product
+/// of diagonal U entries.
+#[allow(clippy::needless_range_loop)]
+pub fn mat_det<const N: usize>(a: &[[f64; N]; N]) -> f64 {
+    let mut lu = *a;
+    let mut sign = 1.0;
+    let mut det = 1.0;
+
+    for col in 0..N {
+        let mut max_row = col;
+        let mut max_val = lu[col][col].abs();
+        for row in (col + 1)..N {
+            let v = lu[row][col].abs();
+            if v > max_val {
+                max_val = v;
+                max_row = row;
+            }
+        }
+        if max_val < 1e-300 {
+            return 0.0;
+        }
+        if max_row != col {
+            lu.swap(col, max_row);
+            sign = -sign;
+        }
+
+        det *= lu[col][col];
+
+        for row in (col + 1)..N {
+            let factor = lu[row][col] / lu[col][col];
+            for j in (col + 1)..N {
+                lu[row][j] -= factor * lu[col][j];
+            }
+        }
+    }
+
+    sign * det
+}
+
+/// Trace of the cube of the product \\(M = AB\\):
+/// \\(\mathrm{Tr}(M^3) = \sum_{i,j,k} M_{ij}\,M_{jk}\,M_{ki}\\),
+/// computed without forming \\(M^3\\) explicitly.
+#[allow(clippy::needless_range_loop)]
+pub fn mat_trace_cube<const N: usize>(a: &[[f64; N]; N], b: &[[f64; N]; N]) -> f64 {
+    let m = mat_mul::<N, N, N>(a, b);
+    let mut trace = 0.0;
+    for i in 0..N {
+        for j in 0..N {
+            for k in 0..N {
+                trace += m[i][j] * m[j][k] * m[k][i];
+            }
+        }
+    }
+    trace
+}
+
+/// Frobenius norm of an \\(M \times N\\) matrix:
+/// \\(\lVert A \rVert_F = \sqrt{\sum_{i,j} A_{ij}^2}\\).
+#[inline]
+pub fn mat_frobenius<const M: usize, const N: usize>(a: &[[f64; N]; M]) -> f64 {
+    let mut sum = 0.0;
+    for row in a.iter() {
+        for &val in row {
+            sum += val * val;
+        }
+    }
+    sum.sqrt()
+}
+
+/// Largest singular value of an \\(N \times N\\) matrix via power iteration
+/// on \\(A^\top A\\): \\(\sigma_{\max} = \sqrt{\lambda_{\max}(A^\top A)}\\).
+///
+/// Returns `0.0` when the dominant eigenvalue of \\(A^\top A\\) is
+/// non-positive (degenerate matrix; this should not occur for any
+/// well-formed real matrix since \\(A^\top A\\) is always PSD).
+pub fn mat_largest_singular_value<const N: usize>(
+    a: &[[f64; N]; N],
+    max_iter: usize,
+    tol: f64,
+) -> f64 {
+    let ata = mat_ata::<N, N>(a);
+    let (_v, lambda) = mat_eigenvector_max(&ata, max_iter, tol);
+    if lambda <= 0.0 { 0.0 } else { lambda.sqrt() }
+}
+
 // ── Phase 1E additions: rectangular mat_mul, transpose, AᵀA ─────────
 
 /// Rectangular matrix multiplication: \\(C = A B\\) where
@@ -1038,6 +1131,146 @@ mod tests {
         let a = [[3.0, 0.0], [0.0, 7.0]];
         let (_v, lambda) = mat_eigenvector_max(&a, 100, 1e-12);
         assert!((lambda - 7.0).abs() < 1e-8, "lambda={lambda}");
+    }
+
+    // ── Phase 1D regression: mat_cholesky on 2×2 ill-conditioned input ──
+
+    #[test]
+    fn test_mat_cholesky_2x2_diagonal_tiny() {
+        // Pre-cancellation diag input: [[ε, 0], [0, 1]]. L[1][0] = 0 so
+        // sqrt(1 - L[1][0]²) does not cancel; this exercises the well-behaved
+        // path for tiny diagonal entries.
+        let eps = 1e-300_f64;
+        let a = [[eps, 0.0], [0.0, 1.0]];
+        let l = mat_cholesky::<2>(&a).expect("Cholesky should succeed");
+        assert!((l[0][0] - eps.sqrt()).abs() / eps.sqrt() < 1e-10);
+        assert_eq!(l[0][1], 0.0);
+        assert!((l[1][1] - 1.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_mat_cholesky_2x2_diagonal_epsilon() {
+        let eps = f64::EPSILON;
+        let a = [[eps, 0.0], [0.0, 1.0]];
+        let l = mat_cholesky::<2>(&a).expect("Cholesky should succeed");
+        let recon = [
+            [l[0][0] * l[0][0], l[0][0] * l[1][0]],
+            [l[0][0] * l[1][0], l[1][0] * l[1][0] + l[1][1] * l[1][1]],
+        ];
+        assert!((recon[0][0] - a[0][0]).abs() / a[0][0] < 1e-10);
+        assert!((recon[1][1] - a[1][1]).abs() < 1e-15);
+    }
+
+    // ── Phase 1D: mat_det ───────────────────────────────────────
+
+    #[test]
+    fn test_mat_det_identity() {
+        let i: [[f64; 4]; 4] =
+            std::array::from_fn(|i| std::array::from_fn(|j| if i == j { 1.0 } else { 0.0 }));
+        assert!((mat_det(&i) - 1.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn test_mat_det_diagonal() {
+        let a = [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 5.0]];
+        assert!((mat_det(&a) - 30.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_mat_det_3x3_known() {
+        let a = [[1.0, 2.0, 3.0], [0.0, 4.0, 5.0], [1.0, 0.0, 6.0]];
+        // 1·(4·6 - 5·0) - 2·(0·6 - 5·1) + 3·(0·0 - 4·1) = 24 + 10 - 12 = 22
+        assert!((mat_det(&a) - 22.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_mat_det_singular() {
+        let a = [[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [0.0, 1.0, 1.0]];
+        assert!(mat_det(&a).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_mat_det_sign_flip_on_row_swap() {
+        let a = [[1.0, 2.0, 0.0], [0.0, 1.0, 3.0], [4.0, 0.0, 1.0]];
+        let mut b = a;
+        b.swap(0, 2);
+        assert!((mat_det(&a) + mat_det(&b)).abs() / mat_det(&a).abs() < 1e-13);
+    }
+
+    #[test]
+    fn test_mat_det_matches_log_det() {
+        // Compare against existing mat_log_det on a strictly positive-det case.
+        let a = [
+            [3.0, 1.0, 0.0, 0.0],
+            [1.0, 3.0, 1.0, 0.0],
+            [0.0, 1.0, 3.0, 1.0],
+            [0.0, 0.0, 1.0, 3.0],
+        ];
+        let d = mat_det(&a);
+        assert!(d > 0.0);
+        assert!((d.ln() - mat_log_det(&a)).abs() < 1e-12);
+    }
+
+    // ── Phase 1D: mat_trace_cube ────────────────────────────────
+
+    #[test]
+    fn test_mat_trace_cube_identity() {
+        let i: [[f64; 3]; 3] =
+            std::array::from_fn(|i| std::array::from_fn(|j| if i == j { 1.0 } else { 0.0 }));
+        // Tr((I·I)³) = Tr(I) = N
+        assert!((mat_trace_cube(&i, &i) - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_mat_trace_cube_scalar_matrix() {
+        // A = αI, B = βI → M = AB = αβI → M³ = (αβ)³ I → Tr = N(αβ)³
+        let a = [[2.0, 0.0], [0.0, 2.0]];
+        let b = [[3.0, 0.0], [0.0, 3.0]];
+        let n = 2.0;
+        let expected = n * (2.0 * 3.0_f64).powi(3);
+        assert!((mat_trace_cube(&a, &b) - expected).abs() < 1e-12);
+    }
+
+    // ── Phase 1D: mat_frobenius ─────────────────────────────────
+
+    #[test]
+    fn test_mat_frobenius_zero() {
+        let a = [[0.0_f64; 4]; 3];
+        assert_eq!(mat_frobenius(&a), 0.0);
+    }
+
+    #[test]
+    fn test_mat_frobenius_identity() {
+        let i: [[f64; 5]; 5] =
+            std::array::from_fn(|i| std::array::from_fn(|j| if i == j { 1.0 } else { 0.0 }));
+        // ||I_5||_F = sqrt(5)
+        assert!((mat_frobenius(&i) - 5.0_f64.sqrt()).abs() < 1e-13);
+    }
+
+    #[test]
+    fn test_mat_frobenius_known_2x3() {
+        let a = [[1.0_f64, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        // sqrt(1+4+9+16+25+36) = sqrt(91)
+        assert!((mat_frobenius(&a) - 91.0_f64.sqrt()).abs() < 1e-12);
+    }
+
+    // ── Phase 1D: mat_largest_singular_value ─────────────────────
+
+    #[test]
+    fn test_mat_largest_singular_value_diagonal() {
+        // Singular values of a diagonal matrix are |diag|. Max here is 7.
+        let a = [[3.0_f64, 0.0], [0.0, 7.0]];
+        let s = mat_largest_singular_value(&a, 200, 1e-12);
+        assert!((s - 7.0).abs() < 1e-7, "got {s}");
+    }
+
+    #[test]
+    fn test_mat_largest_singular_value_orthogonal_is_one() {
+        // Rotation matrix in 2D has σ_max = 1.
+        let theta = 0.7_f64;
+        let a = [[theta.cos(), -theta.sin()], [theta.sin(), theta.cos()]];
+        let s = mat_largest_singular_value(&a, 200, 1e-12);
+        assert!((s - 1.0).abs() < 1e-7, "got {s}");
     }
 
     // ── Phase 1E: mat_mul ───────────────────────────────────────
