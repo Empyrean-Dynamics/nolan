@@ -11,9 +11,10 @@ pub mod mat9;
 pub mod vec3;
 
 pub use generic::{
-    mahalanobis_distance_squared, mahalanobis_distance_squared_with_inv, mat_cholesky,
-    mat_eigenvector_max, mat_inv, mat_log_det, mat_quadratic_form, mat_solve, mat_symmetric_eigen,
-    mat_symmetrize, mat_trace, mat_trace_product, mat_vec_mul, vec_norm,
+    mahalanobis_distance_squared, mahalanobis_distance_squared_with_inv, mat_ata, mat_cholesky,
+    mat_eigenvector_max, mat_inv, mat_log_det, mat_mul, mat_quadratic_form, mat_solve,
+    mat_symmetric_eigen, mat_symmetrize, mat_trace, mat_trace_product, mat_transpose, mat_vec_mul,
+    vec_norm,
 };
 pub use mat3::{
     mat3_inv, mat3_mul, mat3_solve, mat3_transpose, mat3_transpose_vec_mul, mat3_vec_mul,
