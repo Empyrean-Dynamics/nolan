@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778685868668,
+  "lastUpdate": 1778861614231,
   "repoUrl": "https://github.com/Empyrean-Dynamics/nolan",
   "entries": {
     "Nolan Benchmarks": [
@@ -7451,6 +7451,642 @@ window.BENCHMARK_DATA = {
             "name": "wrap_360_x64",
             "value": 214,
             "range": "± 1",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "moeyensj@gmail.com",
+            "name": "Joachim Moeyens",
+            "username": "moeyensj"
+          },
+          "committer": {
+            "email": "moeyensj@users.noreply.github.com",
+            "name": "Joachim Moeyens",
+            "username": "moeyensj"
+          },
+          "distinct": true,
+          "id": "26feeb0d54e38b27dfd1cf9301c44213bf4644f7",
+          "message": "Rename package and lib to hyperjet for crates.io publication\n\nRenames the published artifact: package name becomes `hyperjet` (a\ndescriptive, available crates.io name in the math/AD niche where both\nhalves of the name — *hyperdual* + *Taylor jet* — are canonical AD\nterminology). The repo, the icon, the prose, and the project codename\nall stay nolan — only the on-crates.io identifier changes.\n\nBumps version to 1.7.0 to mark the rename. No public API changes;\nthe only thing breaking for downstream callers is the dep entry in\ntheir Cargo.toml — one line per repo. Rust source files are not\ntouched anywhere downstream because Cargo's `package =` dep alias\nmechanism is at the manifest layer, not the source layer.\n\nCargo.toml\n\n- `name = \"hyperjet\"` (package, on crates.io)\n- `[lib] name = \"hyperjet\"` (Rust source identifier)\n- description expanded for crates.io / docs.rs SEO: now mentions\n  forward-mode, Jet1/Jet2/Jet3, gradients/Hessians/tensors explicitly.\n- `keywords` and `categories` added so the crate surfaces in\n  crates.io's mathematics / science / algorithms category browses and\n  matches the relevant search keywords (autodiff, dual-numbers,\n  hyperdual, jets, forward-mode).\n\nREADME\n\n- Title becomes `# nolan (hyperjet)`. The repo and internal codename\n  stay nolan; the prose / icon / module names continue to refer to the\n  library as nolan.\n- New badge row groups the published-crate signals (CI, crates.io,\n  docs.rs, License) above the existing project/credit badges.\n- New `## Installation` section explains the rename: external callers\n  `cargo add hyperjet` and `use hyperjet::...`; internal Empyrean\n  callers alias the dep back to `nolan` via `nolan = { package =\n  \"hyperjet\", ... }` so existing `use nolan::...` source keeps\n  working unchanged.\n- Intro paragraph rewritten for crates.io / docs.rs SEO — leads with\n  \"forward-mode automatic differentiation\", \"const-generic\n  stack-allocated hyperdual numbers\", mentions the use cases beyond\n  astrodynamics.\n- README is now exercised by `cargo test --doc` via `#![doc =\n  include_str!(\"../README.md\")]` in lib.rs: 7 runnable doctests from\n  the README compile and pass alongside the 20 in-source doctests;\n  the 11 API-illustration snippets that reference placeholder\n  identifiers are marked `,ignore`.\n\nsrc/lib.rs\n\n- New module-level `//!` doc so docs.rs has a substantive landing\n  page describing the type hierarchy, the trait set, the layered\n  primitives (linalg / statistics / grids / angles), and the\n  beyond-astrodynamics use cases. Includes a working doctest at the\n  top so cargo test --doc exercises the basic Jet1 example.\n- `version()` now falls back from `option_env!(\"GIT_VERSION\")` to\n  `env!(\"CARGO_PKG_VERSION\")` so the published crates.io tarball —\n  which intentionally does not ship `build.rs` (and therefore has no\n  build-script-supplied `GIT_VERSION`) — still compiles and reports\n  a clean release identifier (e.g. `\"1.7.0\"`) to downstream callers.\n  Dev builds inside the repo continue to get the git-described\n  version from `build.rs`. This bug was surfaced by the new\n  `cargo publish --dry-run` step in rust.yml.\n\nsrc/**/*.rs and benches/*.rs\n\n- All `use nolan::...` references in `///` doc comments and bench\n  code updated to `use hyperjet::...` so they compile against the\n  renamed crate and so external readers on docs.rs see imports that\n  match what they would actually type after `cargo add hyperjet`.\n  Module-level prose (`//!`) and the `NOLAN_REL_TOL` /\n  `NOLAN_MIN_SCALE` public constants are unchanged — these are\n  nolan-codenamed by design and stay that way.\n\ntests/\n\n- Integration tests (`test_linalg.rs`, `test_polynomials.rs`,\n  `test_trigonometry.rs`) updated from `use nolan::...` /\n  `nolan::jets::tens_index(...)` to the renamed `hyperjet::...`.\n  Without these, the lib + doctests compile but `cargo test` fails\n  with unresolved-crate errors against two of the three integration\n  test binaries.\n\nrelease.yml\n\n- New `Publish to crates.io` step between Test and Create GitHub\n  Release. Uses the org-scoped `CARGO_REGISTRY_TOKEN` secret (already\n  in use by the empyrean workspace's release pipeline). Tag pushes\n  now publish to crates.io automatically. `cargo publish` is\n  idempotent (rejects duplicate versions), so re-running after a\n  transient failure is safe.\n- Existing tag-vs-Cargo.toml version check extended to also verify\n  the tag matches `CITATION.cff`'s `version:` field, so a release\n  cannot proceed with the three identifiers (tag, Cargo.toml,\n  CITATION.cff) out of sync.\n\nrust.yml\n\n- New PR-time check verifies `Cargo.toml` and `CITATION.cff` versions\n  agree, catching the mismatch on the PR that introduces it rather\n  than at tag time.\n- New `cargo publish --dry-run` step exercises the same\n  tarball-then-build path the release workflow's `cargo publish`\n  uses, but without uploading. Catches packaging errors (missing\n  files in `include = `, broken manifest, unpublishable path deps)\n  on PRs rather than at tag time, when the cost of a bad tag is\n  much higher. This step caught the missing-`build.rs`-in-tarball\n  bug fixed in src/lib.rs above.\n\nCITATION.cff\n\n- New file at the repo root so GitHub renders a \"Cite this repository\"\n  widget on the repo page. Zenodo will read this on the first GitHub\n  Release and mint a DOI; a small follow-up PR will paste the\n  resulting DOI back into the file and add a DOI badge to the README.\n\nCONTRIBUTING.md\n\n- New file at the repo root explaining the contribution policy ahead\n  of crates.io publication. Pull requests are welcome; the file lays\n  out where to file issues / features / discussion, the pre-submit\n  check list (`cargo fmt`, `cargo clippy --all-targets`, `cargo test`),\n  and a mandatory AI-disclosure policy: any commit to which an AI\n  model contributed materially must include a `Co-Authored-By:`\n  trailer naming each model and its version (e.g. `Claude Opus 4.7\n  (1M context)`). The trailer is the existing Git convention rendered\n  by GitHub on the commit page, so provenance is visible to reviewers\n  and downstream consumers.\n\nLICENSE\n\n- Copyright year extended from `2026` to `2024-2026` to cover the\n  full development history ahead of public distribution.\n\nInternal-reference cleanup\n\n- Three doc comments in src/optimization/nlls.rs and\n  src/statistics/distributions.rs that referenced \"scott\" (an\n  internal sibling tool) are rewritten to be generic. Substantive\n  comment content preserved — the comments still explain the *why*\n  behind each tolerance / step-bound pattern.\n\nClippy cleanup\n\n- src/linalg/generic.rs: dead `let mut lambda = 0.0_f64;` initializer\n  in `mat_eigenvector_max` dropped; the inner `lambda` is now scoped\n  to the loop body and the post-loop Rayleigh-quotient value writes\n  directly into a fresh local.\n- src/linalg/generic.rs, src/linalg/mat3.rs: `-1.0 * alpha` →\n  `-alpha` in two `mat_solve` round-trip tests (neg_multiply),\n  with the array typed via `: [f64; 3]` to keep the type pinned.\n- src/statistics/distributions.rs: two `normal_cdf` reference values\n  truncated to their f64-representable bits (excessive_precision).\n\nMigration for internal Empyrean repos (separate follow-up PRs)\n\nIn each of villeneuve / scott / kubrick / empyrean-core's Cargo.toml,\nchange the nolan dep entry:\n\n  - nolan = { git = \"ssh://...nolan.git\", tag = \"v1.6.0\" }\n  + nolan = { package = \"hyperjet\", git = \"ssh://...nolan.git\", tag = \"v1.7.0\" }\n\nThat's the only change required per repo. No Rust source files are\ntouched anywhere downstream — every `use nolan::jets::Jet1;` keeps\nworking because Cargo's `package =` field is a dep-level alias, not\na source-level one.\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-05-15T08:53:33-07:00",
+          "tree_id": "54a767f902493c10490359420174abd2ed16039d",
+          "url": "https://github.com/Empyrean-Dynamics/nolan/commit/26feeb0d54e38b27dfd1cf9301c44213bf4644f7"
+        },
+        "date": 1778861612917,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "jet1_6_constant",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_constant",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_constant",
+            "value": 58,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_variable",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_variable",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_variable",
+            "value": 57,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_add",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_add",
+            "value": 37,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_add",
+            "value": 181,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul",
+            "value": 65,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul",
+            "value": 409,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_div",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_div",
+            "value": 83,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_div",
+            "value": 437,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul_scalar",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul_scalar",
+            "value": 29,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul_scalar",
+            "value": 121,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sin",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sin",
+            "value": 58,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sin",
+            "value": 286,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_cos",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_cos",
+            "value": 59,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_cos",
+            "value": 250,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sqrt",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sqrt",
+            "value": 47,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sqrt",
+            "value": 249,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_powi_3",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_powi_3",
+            "value": 50,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_powi_3",
+            "value": 262,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_atan2",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_atan2",
+            "value": 106,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_atan2",
+            "value": 691,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_gravity_accel",
+            "value": 46,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_gravity_accel",
+            "value": 271,
+            "range": "± 30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_gravity_accel",
+            "value": 2120,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_add",
+            "value": 14,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_add",
+            "value": 76,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_add",
+            "value": 871,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_mul",
+            "value": 14,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_mul",
+            "value": 146,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_mul",
+            "value": 1341,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_sin",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_sin",
+            "value": 111,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_sin",
+            "value": 983,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_gravity_accel",
+            "value": 67,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_gravity_accel",
+            "value": 836,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_gravity_accel",
+            "value": 5691,
+            "range": "± 153",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_extract_grad",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_extract_grad",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_extract_hess",
+            "value": 44,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_extract_hess",
+            "value": 117,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_extract_tens",
+            "value": 511,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_extract_tens",
+            "value": 1792,
+            "range": "± 15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_gravity_magnitude",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate2_6_gravity_magnitude",
+            "value": 227,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate3_6_gravity_magnitude",
+            "value": 1721,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_3_gravity_accel",
+            "value": 48,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_first_gravity",
+            "value": 55,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_second_gravity",
+            "value": 280,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_third_gravity",
+            "value": 2657,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_f64",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_f64",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_f64",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_jet1_6",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_jet1_6",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_jet1_6",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_f64",
+            "value": 126,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_f64",
+            "value": 176,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_jet1_6",
+            "value": 871,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_jet1_6",
+            "value": 1332,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_f64",
+            "value": 314,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_f64",
+            "value": 498,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_jet1_9",
+            "value": 3316,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_jet1_9",
+            "value": 5783,
+            "range": "± 35",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_6_f64",
+            "value": 438,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_9_f64",
+            "value": 1042,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_transpose_2x6",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_2x2x6",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_6x2x6",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_ata_2x6",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_vec_mul_2",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_det_6",
+            "value": 93,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_trace_cube_6",
+            "value": 242,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_frobenius_6x6",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_largest_singular_value_6",
+            "value": 3089,
+            "range": "± 58",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "condition_number_6",
+            "value": 13521,
+            "range": "± 44",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sym_eigenvalues_3",
+            "value": 73,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_symmetric_eigen_6",
+            "value": 1958,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nearest_psd_6",
+            "value": 2023,
+            "range": "± 24",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "tikhonov_with_report_6",
+            "value": 12032,
+            "range": "± 108",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sample_statistics_6_n50",
+            "value": 401,
+            "range": "± 31",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sigma_points_6",
+            "value": 165,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k3",
+            "value": 148,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k5",
+            "value": 215,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linspace_64",
+            "value": 115,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "logspace_64",
+            "value": 491,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linear_clamped_64",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_pi_x64",
+            "value": 411,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_2pi_x64",
+            "value": 402,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_180_x64",
+            "value": 284,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_360_x64",
+            "value": 270,
+            "range": "± 0",
             "unit": "ns/iter"
           }
         ]
