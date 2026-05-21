@@ -73,7 +73,7 @@ pub mod traits;
 /// Source builds inside the repo get the git-described version from `build.rs`.
 /// Builds from the published crates.io tarball — which intentionally does not
 /// ship `build.rs` — fall back to the static `CARGO_PKG_VERSION` so that
-/// `hyperjet::version()` reports a clean release identifier (e.g. `"1.7.0"`)
+/// `hyperjet::version()` reports a clean release identifier (e.g. `"1.7.1"`)
 /// to downstream callers.
 pub fn version() -> &'static str {
     option_env!("GIT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
