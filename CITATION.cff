@@ -5,8 +5,8 @@ authors:
   - family-names: Moeyens
     given-names: Joachim
     orcid: "https://orcid.org/0000-0001-5820-3925"
-version: 1.7.1
-date-released: 2026-05-20
+version: 1.8.0
+date-released: 2026-05-29
 url: "https://github.com/Empyrean-Dynamics/nolan"
 repository-code: "https://github.com/Empyrean-Dynamics/nolan"
 license: BSD-3-Clause

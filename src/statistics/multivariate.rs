@@ -158,6 +158,11 @@ pub enum SigmaPointsError {
     NotPositiveDefinite,
     /// Mean or covariance contains NaN/Inf.
     NonFiniteInput,
+    /// The scaled unscented transform has a non-positive scaling
+    /// \\(N + \lambda = \alpha^2 (N + \kappa) \le 0\\), so the spread
+    /// \\(\sqrt{N+\lambda}\\) is undefined. Choose \\(\kappa > -N\\)
+    /// (e.g. `kappa = 0` or `3 - N`) with `alpha != 0`.
+    InvalidScaling,
 }
 
 impl std::fmt::Display for SigmaPointsError {
@@ -165,6 +170,9 @@ impl std::fmt::Display for SigmaPointsError {
         match self {
             Self::NotPositiveDefinite => write!(f, "covariance is not positive-definite"),
             Self::NonFiniteInput => write!(f, "mean or covariance contains NaN/Inf"),
+            Self::InvalidScaling => {
+                write!(f, "scaled unscented transform has non-positive N + lambda")
+            }
         }
     }
 }
@@ -227,6 +235,162 @@ pub fn sigma_points<const N: usize>(
     Ok(points)
 }
 
+// ─── Scaled (Merwe) sigma points ────────────────────────────────────
+
+/// Tuning parameters for the Merwe scaled unscented transform.
+///
+/// - `alpha` controls the spread of the sigma points around the mean
+///   (typically small, e.g. `1e-3`, to keep them close and reduce
+///   higher-order sampling error).
+/// - `beta` incorporates prior knowledge of the distribution; `beta = 2`
+///   is optimal for a Gaussian (it only affects the covariance weight of
+///   the center point).
+/// - `kappa` is a secondary scaling, commonly `0` (Merwe) or `3 - N`
+///   (Julier).
+///
+/// The composite scaling is \\(\lambda = \alpha^2 (N + \kappa) - N\\), and
+/// the spread is \\(\sqrt{N + \lambda} = \alpha\sqrt{N + \kappa}\\).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SigmaPointScaling {
+    /// Spread parameter \\(\alpha\\).
+    pub alpha: f64,
+    /// Prior-knowledge parameter \\(\beta\\) (2 is optimal for Gaussians).
+    pub beta: f64,
+    /// Secondary scaling \\(\kappa\\).
+    pub kappa: f64,
+}
+
+impl SigmaPointScaling {
+    /// Construct from explicit \\((\alpha, \beta, \kappa)\\).
+    pub fn new(alpha: f64, beta: f64, kappa: f64) -> Self {
+        Self { alpha, beta, kappa }
+    }
+
+    /// The common Merwe default for Gaussian state estimation:
+    /// \\(\alpha = 10^{-3}, \beta = 2, \kappa = 0\\).
+    pub fn merwe() -> Self {
+        Self {
+            alpha: 1e-3,
+            beta: 2.0,
+            kappa: 0.0,
+        }
+    }
+}
+
+impl Default for SigmaPointScaling {
+    fn default() -> Self {
+        Self::merwe()
+    }
+}
+
+/// A Merwe scaled sigma-point set: the \\(2N+1\\) points together with
+/// their separate mean and covariance weights.
+///
+/// `points`, `weights_mean`, and `weights_cov` are positionally aligned,
+/// all of length \\(2N+1\\). Reconstruct the propagated moments with
+/// [`weighted_sample_statistics`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScaledSigmaPoints<const N: usize> {
+    /// The \\(2N+1\\) sigma points (index 0 is the center).
+    pub points: Vec<[f64; N]>,
+    /// Mean-reconstruction weights \\(W_i^m\\) (sum to 1).
+    pub weights_mean: Vec<f64>,
+    /// Covariance-reconstruction weights \\(W_i^c\\) (the center weight
+    /// may be negative — this is expected for the scaled UT).
+    pub weights_cov: Vec<f64>,
+}
+
+/// Merwe scaled unscented sigma points and weights for a Gaussian
+/// \\(\mathcal{N}(\boldsymbol{\mu}, \Sigma)\\).
+///
+/// Generates the \\(2N+1\\) points
+/// \\[
+/// \chi_0 = \boldsymbol{\mu}, \quad
+/// \chi_i = \boldsymbol{\mu} + \bigl(\sqrt{(N+\lambda)\,\Sigma}\bigr)_{:,i},
+/// \quad
+/// \chi_{i+N} = \boldsymbol{\mu} - \bigl(\sqrt{(N+\lambda)\,\Sigma}\bigr)_{:,i}
+/// \\]
+/// with \\(\lambda = \alpha^2 (N + \kappa) - N\\) (the matrix square root
+/// is the lower Cholesky factor), and the weights
+/// \\[
+/// W_0^m = \frac{\lambda}{N+\lambda}, \quad
+/// W_0^c = \frac{\lambda}{N+\lambda} + (1 - \alpha^2 + \beta), \quad
+/// W_i^m = W_i^c = \frac{1}{2(N+\lambda)}.
+/// \\]
+///
+/// Propagating the points through a map and reconstructing with
+/// [`weighted_sample_statistics`] gives the unscented mean and
+/// covariance: exact for affine maps, second-order accurate (with the
+/// \\(\beta\\) correction) for nonlinear maps. See Wan & Van der Merwe
+/// (2000).
+///
+/// # Errors
+///
+/// - [`SigmaPointsError::NonFiniteInput`] if `mean`, `cov`, or the
+///   scaling parameters contain non-finite components.
+/// - [`SigmaPointsError::InvalidScaling`] if \\(N + \lambda \le 0\\).
+/// - [`SigmaPointsError::NotPositiveDefinite`] if `cov` is not
+///   positive-definite.
+#[allow(clippy::needless_range_loop)]
+pub fn sigma_points_scaled<const N: usize>(
+    mean: &[f64; N],
+    cov: &[[f64; N]; N],
+    scaling: &SigmaPointScaling,
+) -> Result<ScaledSigmaPoints<N>, SigmaPointsError> {
+    if mean.iter().any(|x| !x.is_finite())
+        || cov.iter().flatten().any(|x| !x.is_finite())
+        || !scaling.alpha.is_finite()
+        || !scaling.beta.is_finite()
+        || !scaling.kappa.is_finite()
+    {
+        return Err(SigmaPointsError::NonFiniteInput);
+    }
+
+    let n = N as f64;
+    let lambda = scaling.alpha * scaling.alpha * (n + scaling.kappa) - n;
+    let n_plus_lambda = n + lambda; // = alpha^2 (N + kappa)
+    if n_plus_lambda <= 0.0 {
+        return Err(SigmaPointsError::InvalidScaling);
+    }
+
+    let l = mat_cholesky(cov).ok_or(SigmaPointsError::NotPositiveDefinite)?;
+    let scale = n_plus_lambda.sqrt();
+
+    let mut points = Vec::with_capacity(2 * N + 1);
+    points.push(*mean);
+    for i in 0..N {
+        let mut plus = *mean;
+        let mut minus = *mean;
+        // Column i of L: l[k][i] is nonzero for k >= i (L is lower triangular).
+        for k in i..N {
+            let delta = scale * l[k][i];
+            plus[k] += delta;
+            minus[k] -= delta;
+        }
+        points.push(plus);
+        points.push(minus);
+    }
+
+    let w0_m = lambda / n_plus_lambda;
+    let w0_c = w0_m + (1.0 - scaling.alpha * scaling.alpha + scaling.beta);
+    let wi = 1.0 / (2.0 * n_plus_lambda);
+
+    let mut weights_mean = Vec::with_capacity(2 * N + 1);
+    let mut weights_cov = Vec::with_capacity(2 * N + 1);
+    weights_mean.push(w0_m);
+    weights_cov.push(w0_c);
+    for _ in 0..(2 * N) {
+        weights_mean.push(wi);
+        weights_cov.push(wi);
+    }
+
+    Ok(ScaledSigmaPoints {
+        points,
+        weights_mean,
+        weights_cov,
+    })
+}
+
 // ─── Sample statistics ─────────────────────────────────────────────
 
 /// Mean and unbiased sample covariance (denominator \\(n-1\\)) of a
@@ -274,11 +438,161 @@ pub fn sample_statistics<const N: usize>(
     Some((mean, cov))
 }
 
+/// Weighted mean and covariance of a sigma-point ensemble.
+///
+/// Computes \\(\boldsymbol{\mu} = \sum_i W_i^m \chi_i\\) and
+/// \\(\Sigma = \sum_i W_i^c (\chi_i - \boldsymbol{\mu})(\chi_i - \boldsymbol{\mu})^\top\\)
+/// — the reconstruction half of the scaled unscented transform (pair with
+/// [`sigma_points_scaled`]). Unlike [`sample_statistics`], the points are
+/// weighted, so the covariance weights may be negative (as the scaled UT's
+/// center weight typically is); the result is symmetric by construction
+/// but is not guaranteed positive-definite.
+///
+/// Returns `None` if `points` is empty or the weight slices' lengths do
+/// not match `points`.
+#[allow(clippy::needless_range_loop)]
+pub fn weighted_sample_statistics<const N: usize>(
+    points: &[[f64; N]],
+    weights_mean: &[f64],
+    weights_cov: &[f64],
+) -> Option<([f64; N], [[f64; N]; N])> {
+    if points.is_empty() || weights_mean.len() != points.len() || weights_cov.len() != points.len()
+    {
+        return None;
+    }
+
+    let mut mean = [0.0_f64; N];
+    for (p, &w) in points.iter().zip(weights_mean) {
+        for i in 0..N {
+            mean[i] += w * p[i];
+        }
+    }
+
+    let mut cov = [[0.0_f64; N]; N];
+    for (p, &w) in points.iter().zip(weights_cov) {
+        let mut d = [0.0_f64; N];
+        for i in 0..N {
+            d[i] = p[i] - mean[i];
+        }
+        for i in 0..N {
+            for j in 0..N {
+                cov[i][j] += w * d[i] * d[j];
+            }
+        }
+    }
+
+    Some((mean, cov))
+}
+
 #[cfg(test)]
 #[allow(clippy::needless_range_loop)]
 #[allow(clippy::type_complexity)]
 mod tests {
     use super::*;
+
+    // ── scaled (Merwe) sigma points ───────────────────────────────
+
+    fn spd_3x3() -> [[f64; 3]; 3] {
+        // A symmetric positive-definite covariance with cross terms.
+        [[4.0, 1.0, 0.5], [1.0, 3.0, -0.8], [0.5, -0.8, 2.0]]
+    }
+
+    #[test]
+    fn scaled_sigma_points_count_and_center() {
+        let mean = [1.0, -2.0, 3.0];
+        let sp = sigma_points_scaled::<3>(&mean, &spd_3x3(), &SigmaPointScaling::merwe()).unwrap();
+        assert_eq!(sp.points.len(), 2 * 3 + 1);
+        assert_eq!(sp.weights_mean.len(), 7);
+        assert_eq!(sp.weights_cov.len(), 7);
+        // Center point is the mean.
+        assert_eq!(sp.points[0], mean);
+    }
+
+    #[test]
+    fn scaled_mean_weights_sum_to_one() {
+        let sp =
+            sigma_points_scaled::<3>(&[0.0; 3], &spd_3x3(), &SigmaPointScaling::merwe()).unwrap();
+        let s: f64 = sp.weights_mean.iter().sum();
+        assert!((s - 1.0).abs() < 1e-12, "mean weights sum to {s}");
+    }
+
+    #[test]
+    fn scaled_round_trip_recovers_mean_and_cov() {
+        // sigma_points_scaled + weighted_sample_statistics must recover
+        // (μ, Σ) exactly for several valid tunings (linear/identity map).
+        let mean = [1.5, -0.5, 2.0];
+        let cov = spd_3x3();
+        for scaling in [
+            SigmaPointScaling::merwe(),
+            SigmaPointScaling::new(1.0, 2.0, 0.0),
+            SigmaPointScaling::new(0.5, 2.0, 3.0 - 3.0), // kappa = 3 - N
+            SigmaPointScaling::new(0.1, 0.0, 1.0),
+        ] {
+            let sp = sigma_points_scaled::<3>(&mean, &cov, &scaling).unwrap();
+            let (m, c) =
+                weighted_sample_statistics::<3>(&sp.points, &sp.weights_mean, &sp.weights_cov)
+                    .unwrap();
+            for i in 0..3 {
+                assert!((m[i] - mean[i]).abs() < 1e-10, "mean[{i}] for {scaling:?}");
+                for j in 0..3 {
+                    assert!(
+                        (c[i][j] - cov[i][j]).abs() < 1e-9,
+                        "cov[{i}][{j}] = {} != {} for {scaling:?}",
+                        c[i][j],
+                        cov[i][j]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scaled_invalid_scaling_errors() {
+        // kappa = -N makes N + lambda = alpha^2 (N + kappa) = 0.
+        let err = sigma_points_scaled::<3>(
+            &[0.0; 3],
+            &spd_3x3(),
+            &SigmaPointScaling::new(1e-3, 2.0, -3.0),
+        )
+        .unwrap_err();
+        assert_eq!(err, SigmaPointsError::InvalidScaling);
+    }
+
+    #[test]
+    fn scaled_not_positive_definite_errors() {
+        let not_pd = [[1.0, 2.0, 0.0], [2.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        assert_eq!(
+            sigma_points_scaled::<3>(&[0.0; 3], &not_pd, &SigmaPointScaling::merwe()),
+            Err(SigmaPointsError::NotPositiveDefinite)
+        );
+    }
+
+    #[test]
+    fn scaled_non_finite_errors() {
+        assert_eq!(
+            sigma_points_scaled::<3>(
+                &[0.0, f64::NAN, 0.0],
+                &spd_3x3(),
+                &SigmaPointScaling::merwe()
+            ),
+            Err(SigmaPointsError::NonFiniteInput)
+        );
+        assert_eq!(
+            sigma_points_scaled::<3>(
+                &[0.0; 3],
+                &spd_3x3(),
+                &SigmaPointScaling::new(f64::INFINITY, 2.0, 0.0)
+            ),
+            Err(SigmaPointsError::NonFiniteInput)
+        );
+    }
+
+    #[test]
+    fn weighted_sample_statistics_length_mismatch_returns_none() {
+        let pts = vec![[0.0; 3], [1.0; 3]];
+        assert!(weighted_sample_statistics::<3>(&pts, &[0.5], &[0.5, 0.5]).is_none());
+        assert!(weighted_sample_statistics::<3>(&[], &[], &[]).is_none());
+    }
 
     // ── split_gaussian ────────────────────────────────────────────
 

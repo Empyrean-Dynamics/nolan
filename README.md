@@ -40,7 +40,7 @@ The repo and internal codename stay `nolan`.
 
 ```toml
 [dependencies]
-hyperjet = "1.7.1"
+hyperjet = "1.8.0"
 ```
 ```rust
 use hyperjet::jets::Jet1;
@@ -51,7 +51,7 @@ Internal Empyrean callers can alias the dep back to `nolan` so existing
 
 ```toml
 [dependencies]
-nolan = { package = "hyperjet", version = "1.7.1" }
+nolan = { package = "hyperjet", version = "1.8.0" }
 ```
 ```rust,ignore
 use nolan::jets::Jet1;
@@ -354,12 +354,23 @@ let prob = normal_cdf(z);
 generic over the state dimension:
 
 ```rust,ignore
-use hyperjet::statistics::{split_gaussian, sigma_points, sample_statistics};
+use hyperjet::statistics::{
+    split_gaussian, sigma_points, sample_statistics,
+    sigma_points_scaled, weighted_sample_statistics, SigmaPointScaling,
+};
 
 // Canonical 2N+1 unscaled Julier-Uhlmann sigma points: sample_statistics
 // over the returned set round-trips exactly to (mu, cov).
 let points = sigma_points::<6>(&mu, &cov).unwrap();
 let (mu_back, cov_back) = sample_statistics::<6>(&points).unwrap();
+
+// Merwe scaled unscented transform with a tunable spread (alpha, beta,
+// kappa). Propagate `sp.points` through a map, then reconstruct the
+// transformed moments with weighted_sample_statistics; for an affine map
+// this recovers (mu, cov) exactly.
+let sp = sigma_points_scaled::<6>(&mu, &cov, &SigmaPointScaling::merwe()).unwrap();
+let (mu_ut, cov_ut) =
+    weighted_sample_statistics::<6>(&sp.points, &sp.weights_mean, &sp.weights_cov).unwrap();
 
 // Equal-weight Gaussian mixture decomposition along a chosen direction
 // (DeMars-style uniform spacing; preserves the mixture mean and
