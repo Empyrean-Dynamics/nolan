@@ -29,5 +29,6 @@ pub mod multivariate;
 
 pub use distributions::{chi2_sf, ln_gamma, normal_cdf, normal_pdf, upper_inc_gamma_reg};
 pub use multivariate::{
-    GaussianSplitError, SigmaPointsError, sample_statistics, sigma_points, split_gaussian,
+    GaussianSplitError, ScaledSigmaPoints, SigmaPointScaling, SigmaPointsError, sample_statistics,
+    sigma_points, sigma_points_scaled, split_gaussian, weighted_sample_statistics,
 };
