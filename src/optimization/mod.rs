@@ -28,6 +28,7 @@
 //! assert!((solution.x[1] - 7.0).abs() < 0.1);
 //! ```
 
+pub mod lm;
 mod nlls;
 
 pub use nlls::{
