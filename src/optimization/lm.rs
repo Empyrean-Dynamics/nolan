@@ -111,7 +111,34 @@
 
 use crate::linalg::generic::{mat_cholesky, mat_inv, mat_symmetrize};
 
-pub use super::nlls::{NLLSEvaluation, NLLSPrior};
+/// Result of evaluating the residual function at a point.
+///
+/// The caller pre-weights residuals and Jacobian by the observation
+/// weight Cholesky factor: \\(\mathbf{r}_w = L\mathbf{r}\\),
+/// \\(J_w = LJ\\) where \\(W = LL^T\\). The solver then accumulates
+/// \\(J^T J\\) and \\(J^T r\\) without an explicit weight matrix.
+#[derive(Clone, Debug)]
+pub struct NLLSEvaluation<const N: usize> {
+    /// Pre-weighted residual values.
+    pub residuals: Vec<f64>,
+    /// Pre-weighted Jacobian rows: \\(\partial r_i / \partial x_j\\).
+    /// Must have the same length as `residuals`.
+    pub jacobian: Vec<[f64; N]>,
+    /// Total cost \\(\sum r_i^2\\). Used for Levenberg-Marquardt adaptation.
+    pub cost: f64,
+}
+
+/// Optional Bayesian prior on the parameters.
+///
+/// Augments the normal equations: \\(N \leftarrow N + P_0^{-1}\\),
+/// \\(d \leftarrow d - P_0^{-1}(\mathbf{x} - \mathbf{x}_0)\\).
+#[derive(Clone, Debug)]
+pub struct NLLSPrior<const N: usize> {
+    /// Prior mean.
+    pub mean: [f64; N],
+    /// Inverse of prior covariance matrix.
+    pub covariance_inv: [[f64; N]; N],
+}
 
 // ── Tuning constants ────────────────────────────────────────────────
 
@@ -2046,10 +2073,10 @@ mod tests {
 
     /// The motivating defect class (empyrean-ju91): far from the
     /// minimum of r = ln(1 + (x−5)²) the Jacobian collapses and pure
-    /// Gauss-Newton overshoots by orders of magnitude. The old
-    /// always-accept solver provably diverges here without a clamp
-    /// (see nlls::tests::test_constrain_step_bounds_overshoot); the
-    /// accept/reject loop must converge with NO clamp.
+    /// Gauss-Newton overshoots by orders of magnitude. The removed
+    /// always-accept solver provably diverged here without a
+    /// problem-supplied step clamp; the accept/reject loop must
+    /// converge with NO clamp.
     #[test]
     fn test_overshoot_converges_without_clamp() {
         let mut p = Tracked::new(|x: &[f64; 1]| {
@@ -2828,37 +2855,14 @@ mod tests {
         );
     }
 
-    // ── Cross-check against the legacy solver ──
+    // ── Known-answer check on an exactly linear problem ──
 
     #[test]
-    fn test_matches_nlls_on_linear() {
-        use crate::optimization::{NLLSConfig, NLLSEvaluation as OldEval, NLLSMethod};
+    fn test_exact_solution_on_linear() {
+        // Data lying exactly on \( y = 2x + 1 \): the least-squares
+        // solution is \( p = [2, 1] \) with zero residual.
         let xs = [0.0, 1.0, 2.0, 3.0];
         let ys = [1.0, 3.0, 5.0, 7.0];
-
-        let old = crate::optimization::solve_nlls(
-            |p: &[f64; 2]| {
-                let residuals: Vec<f64> = xs
-                    .iter()
-                    .zip(ys.iter())
-                    .map(|(&x, &y)| p[0] * x + p[1] - y)
-                    .collect();
-                let jacobian: Vec<[f64; 2]> = xs.iter().map(|&x| [x, 1.0]).collect();
-                let cost = residuals.iter().map(|r| r * r).sum();
-                OldEval {
-                    residuals,
-                    jacobian,
-                    cost,
-                }
-            },
-            [0.0; 2],
-            &NLLSConfig {
-                method: NLLSMethod::GaussNewton,
-                ..Default::default()
-            },
-            None,
-        )
-        .unwrap();
 
         let mut p = Tracked::new(move |p: &[f64; 2]| {
             let residuals: Vec<f64> = xs
@@ -2871,10 +2875,11 @@ mod tests {
         });
         let mut cfg = config();
         cfg.xtol = 1e-14;
-        let new = solve(&mut p, [0.0; 2], &cfg, None).unwrap();
+        let solution = solve(&mut p, [0.0; 2], &cfg, None).unwrap();
 
-        assert!((old.x[0] - new.x[0]).abs() < 1e-9);
-        assert!((old.x[1] - new.x[1]).abs() < 1e-9);
+        assert!(solution.converged);
+        assert!((solution.x[0] - 2.0).abs() < 1e-9);
+        assert!((solution.x[1] - 1.0).abs() < 1e-9);
     }
 
     // ── Acceptance-test edge cases ──

@@ -354,11 +354,6 @@ equations and the compared costs, an explicit per-axis error taxonomy
 fabricated zeros), and bit-deterministic fixed-order arithmetic with a
 golden-trace regression test.
 
-The legacy always-accept solver (`optimization::{solve, solve2,
-NLLSConfig, ...}`) remains available for migration and is scheduled
-for removal in the next major release — new code should use
-`optimization::lm`.
-
 ## Statistics
 
 `hyperjet::statistics::distributions` ships the scalar-input distribution
