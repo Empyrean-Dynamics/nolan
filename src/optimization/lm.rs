@@ -1066,17 +1066,9 @@ pub fn solve<P: ResidualProblem<N>, const N: usize>(
             // see the SAME quadratic form, and real priors derived
             // from an LU-based inversion are asymmetric at the ulp
             // level.
-            let mut covariance_inv = p.covariance_inv;
-            for i in 0..N {
-                for j in (i + 1)..N {
-                    let avg = 0.5 * (covariance_inv[i][j] + covariance_inv[j][i]);
-                    covariance_inv[i][j] = avg;
-                    covariance_inv[j][i] = avg;
-                }
-            }
             Some(NLLSPrior {
                 mean: p.mean,
-                covariance_inv,
+                covariance_inv: mat_symmetrize(&p.covariance_inv),
             })
         }
         None => None,
@@ -1426,6 +1418,46 @@ fn covariance<const N: usize>(
     Ok(cov)
 }
 
+/// Nielsen rejection escalation: \\(\mu \leftarrow \max(\mu,
+/// \mu_{\text{seed}}) \cdot \nu\\), \\(\nu \leftarrow 2\nu\\). Returns
+/// the termination reason when the escalated \\(\mu\\) exceeds the
+/// budget (the caller breaks the outer loop); `None` means retry the
+/// inner loop at the new damping.
+#[inline]
+fn escalate_mu(mu: &mut f64, nu: &mut f64, mu_max: f64) -> Option<TerminationReason> {
+    if *mu < MU_SEED {
+        *mu = MU_SEED;
+    }
+    *mu *= *nu;
+    *nu *= 2.0;
+    if *mu > mu_max {
+        Some(TerminationReason::DampingExhausted { mu: *mu })
+    } else {
+        None
+    }
+}
+
+/// Construct the [`LMError::PersistentInvalidTrials`] terminal error at
+/// the best (last accepted) iterate. Shared by the trial-cost and
+/// rollback paths so the diagnostic payload cannot drift between them.
+fn persistent_invalid_trials<E, const N: usize>(
+    iteration: usize,
+    consecutive: usize,
+    last_source: Option<E>,
+    x: &[f64; N],
+    best_cost: f64,
+) -> LMError<E> {
+    let mut best_x = Vec::with_capacity(N);
+    best_x.extend_from_slice(x);
+    LMError::PersistentInvalidTrials {
+        iteration,
+        consecutive,
+        last_source,
+        best_x,
+        best_cost,
+    }
+}
+
 // ── Driver core ─────────────────────────────────────────────────────
 
 /// Bookkeeping for the most recent accepted step, consumed by the
@@ -1608,13 +1640,8 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                 // reject (raise μ) and retry — never bail, never fall
                 // back to a different solver.
                 n_rejected_trials += 1;
-                if mu < MU_SEED {
-                    mu = MU_SEED;
-                }
-                mu *= nu;
-                nu *= 2.0;
-                if mu > config.mu_max {
-                    reason = TerminationReason::DampingExhausted { mu };
+                if let Some(r) = escalate_mu(&mut mu, &mut nu, config.mu_max) {
+                    reason = r;
                     break 'outer;
                 }
                 continue;
@@ -1658,13 +1685,8 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                         // normal μ escalation (no cost evaluation
                         // spent).
                         n_rejected_trials += 1;
-                        if mu < MU_SEED {
-                            mu = MU_SEED;
-                        }
-                        mu *= nu;
-                        nu *= 2.0;
-                        if mu > config.mu_max {
-                            reason = TerminationReason::DampingExhausted { mu };
+                        if let Some(r) = escalate_mu(&mut mu, &mut nu, config.mu_max) {
+                            reason = r;
                             break 'outer;
                         }
                         continue;
@@ -1733,15 +1755,13 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                 // is still a non-committed trial — let the problem
                 // discard its pending state before the error.
                 source.rejected(&x_trial);
-                let mut best_x = Vec::with_capacity(N);
-                best_x.extend_from_slice(&x);
-                return Err(LMError::PersistentInvalidTrials {
+                return Err(persistent_invalid_trials(
                     iteration,
-                    consecutive: consecutive_invalid,
-                    last_source: last_invalid_source,
-                    best_x,
-                    best_cost: sys.cost,
-                });
+                    consecutive_invalid,
+                    last_invalid_source,
+                    &x,
+                    sys.cost,
+                ));
             }
 
             let accept = match cost_trial {
@@ -1756,13 +1776,8 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                     last_invalid_source = None;
                 }
                 source.rejected(&x_trial);
-                if mu < MU_SEED {
-                    mu = MU_SEED;
-                }
-                mu *= nu;
-                nu *= 2.0;
-                if mu > config.mu_max {
-                    reason = TerminationReason::DampingExhausted { mu };
+                if let Some(r) = escalate_mu(&mut mu, &mut nu, config.mu_max) {
+                    reason = r;
                     break 'outer;
                 }
                 continue;
@@ -1832,24 +1847,17 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                     }
                     if consecutive_invalid >= config.max_consecutive_invalid {
                         source.rejected(&x_trial);
-                        let mut best_x = Vec::with_capacity(N);
-                        best_x.extend_from_slice(&x);
-                        return Err(LMError::PersistentInvalidTrials {
+                        return Err(persistent_invalid_trials(
                             iteration,
-                            consecutive: consecutive_invalid,
-                            last_source: last_invalid_source,
-                            best_x,
-                            best_cost: sys.cost,
-                        });
+                            consecutive_invalid,
+                            last_invalid_source,
+                            &x,
+                            sys.cost,
+                        ));
                     }
                     source.rejected(&x_trial);
-                    if mu < MU_SEED {
-                        mu = MU_SEED;
-                    }
-                    mu *= nu;
-                    nu *= 2.0;
-                    if mu > config.mu_max {
-                        reason = TerminationReason::DampingExhausted { mu };
+                    if let Some(r) = escalate_mu(&mut mu, &mut nu, config.mu_max) {
+                        reason = r;
                         break 'outer;
                     }
                     continue;
