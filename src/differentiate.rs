@@ -340,36 +340,25 @@ pub fn differentiate_dyn<
 ) -> Derivatives<N, M> {
     match order {
         Order::First => {
-            let seeded = seed_jet1::<N>(x);
-            let ys = f.eval(seeded);
-            let values = std::array::from_fn(|m| ys[m].value);
-            let jacobian = std::array::from_fn(|m| ys[m].extract_grad::<N>());
+            let (values, jacobian) = differentiate1_vec(x, |xs| f.eval(xs));
             Derivatives::First { values, jacobian }
         }
         Order::Second => {
-            let seeded = seed_jet2::<N, H>(x);
-            let ys = f.eval(seeded);
-            let values = std::array::from_fn(|m| ys[m].value);
-            let jacobian = std::array::from_fn(|m| ys[m].extract_grad::<N>());
-            let hessians = Box::new(std::array::from_fn(|m| ys[m].extract_hess::<N>()));
+            let (values, jacobian, hessians) = differentiate2_vec::<N, H, M, _>(x, |xs| f.eval(xs));
             Derivatives::Second {
                 values,
                 jacobian,
-                hessians,
+                hessians: Box::new(hessians),
             }
         }
         Order::Third => {
-            let seeded = seed_jet3::<N, H, T>(x);
-            let ys = f.eval(seeded);
-            let values = std::array::from_fn(|m| ys[m].value);
-            let jacobian = std::array::from_fn(|m| ys[m].extract_grad::<N>());
-            let hessians = Box::new(std::array::from_fn(|m| ys[m].extract_hess::<N>()));
-            let tensors = Box::new(std::array::from_fn(|m| ys[m].extract_tens::<N>()));
+            let (values, jacobian, hessians, tensors) =
+                differentiate3_vec::<N, H, T, M, _>(x, |xs| f.eval(xs));
             Derivatives::Third {
                 values,
                 jacobian,
-                hessians,
-                tensors,
+                hessians: Box::new(hessians),
+                tensors: Box::new(tensors),
             }
         }
     }

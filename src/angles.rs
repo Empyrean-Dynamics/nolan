@@ -33,6 +33,31 @@
 //! assert!((wrap_pi(PI) - PI).abs() < 1e-12);
 //! ```
 
+/// Wrap into the zero-centered half-open interval
+/// `(-half_period, half_period]`. Shared body of [`wrap_pi`] (half
+/// period \\(\pi\\)) and [`wrap_180`] (half period 180°); the full
+/// period `2 * half_period` is exact in both cases (doubling an f64
+/// is exact).
+#[inline]
+fn wrap_centered(x: f64, half_period: f64) -> f64 {
+    let period = 2.0 * half_period;
+    let mut y = x % period;
+    if y > half_period {
+        y -= period;
+    } else if y <= -half_period {
+        y += period;
+    }
+    y
+}
+
+/// Wrap into the positive half-open interval `[0, period)`. Shared
+/// body of [`wrap_2pi`] and [`wrap_360`].
+#[inline]
+fn wrap_positive(x: f64, period: f64) -> f64 {
+    let y = x % period;
+    if y < 0.0 { y + period } else { y }
+}
+
 /// Wrap an angle (radians) into the half-open interval `(-π, π]`.
 ///
 /// # Examples
@@ -48,14 +73,7 @@
 /// ```
 #[inline]
 pub fn wrap_pi(x: f64) -> f64 {
-    use std::f64::consts::{PI, TAU};
-    let mut y = x % TAU;
-    if y > PI {
-        y -= TAU;
-    } else if y <= -PI {
-        y += TAU;
-    }
-    y
+    wrap_centered(x, std::f64::consts::PI)
 }
 
 /// Wrap an angle (radians) into the half-open interval `[0, 2π)`.
@@ -73,9 +91,7 @@ pub fn wrap_pi(x: f64) -> f64 {
 /// ```
 #[inline]
 pub fn wrap_2pi(x: f64) -> f64 {
-    use std::f64::consts::TAU;
-    let y = x % TAU;
-    if y < 0.0 { y + TAU } else { y }
+    wrap_positive(x, std::f64::consts::TAU)
 }
 
 /// Wrap an angle (degrees) into the half-open interval `(-180°, 180°]`.
@@ -98,13 +114,7 @@ pub fn wrap_2pi(x: f64) -> f64 {
 /// ```
 #[inline]
 pub fn wrap_180(x: f64) -> f64 {
-    let mut y = x % 360.0;
-    if y > 180.0 {
-        y -= 360.0;
-    } else if y <= -180.0 {
-        y += 360.0;
-    }
-    y
+    wrap_centered(x, 180.0)
 }
 
 /// Wrap an angle (degrees) into the half-open interval `[0°, 360°)`.
@@ -121,8 +131,7 @@ pub fn wrap_180(x: f64) -> f64 {
 /// ```
 #[inline]
 pub fn wrap_360(x: f64) -> f64 {
-    let y = x % 360.0;
-    if y < 0.0 { y + 360.0 } else { y }
+    wrap_positive(x, 360.0)
 }
 
 #[cfg(test)]

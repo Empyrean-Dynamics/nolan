@@ -217,6 +217,20 @@ pub fn sigma_points<const N: usize>(
     let l = mat_cholesky(cov).ok_or(SigmaPointsError::NotPositiveDefinite)?;
     let scale = (N as f64).sqrt();
 
+    Ok(symmetric_cholesky_points(mean, &l, scale))
+}
+
+/// The symmetric \\(2N+1\\) point set \\(\\{\boldsymbol{\mu},\,
+/// \boldsymbol{\mu} \pm s\,\mathbf{L}_{:,i}\\}\\) about the mean along
+/// the Cholesky columns — shared by the unscaled ([`sigma_points`]) and
+/// Merwe scaled ([`sigma_points_scaled`]) constructions, which differ
+/// only in the spread \\(s\\).
+#[allow(clippy::needless_range_loop)]
+fn symmetric_cholesky_points<const N: usize>(
+    mean: &[f64; N],
+    l: &[[f64; N]; N],
+    scale: f64,
+) -> Vec<[f64; N]> {
     let mut points = Vec::with_capacity(2 * N + 1);
     points.push(*mean);
     for i in 0..N {
@@ -231,8 +245,7 @@ pub fn sigma_points<const N: usize>(
         points.push(plus);
         points.push(minus);
     }
-
-    Ok(points)
+    points
 }
 
 // ─── Scaled (Merwe) sigma points ────────────────────────────────────
@@ -356,20 +369,7 @@ pub fn sigma_points_scaled<const N: usize>(
     let l = mat_cholesky(cov).ok_or(SigmaPointsError::NotPositiveDefinite)?;
     let scale = n_plus_lambda.sqrt();
 
-    let mut points = Vec::with_capacity(2 * N + 1);
-    points.push(*mean);
-    for i in 0..N {
-        let mut plus = *mean;
-        let mut minus = *mean;
-        // Column i of L: l[k][i] is nonzero for k >= i (L is lower triangular).
-        for k in i..N {
-            let delta = scale * l[k][i];
-            plus[k] += delta;
-            minus[k] -= delta;
-        }
-        points.push(plus);
-        points.push(minus);
-    }
+    let points = symmetric_cholesky_points(mean, &l, scale);
 
     let w0_m = lambda / n_plus_lambda;
     let w0_c = w0_m + (1.0 - scaling.alpha * scaling.alpha + scaling.beta);

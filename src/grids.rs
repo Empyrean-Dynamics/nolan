@@ -32,6 +32,14 @@ use std::ops::{Add, Mul};
 /// assert!(linspace(0.0, 1.0, 0).is_empty());
 /// ```
 pub fn linspace(min: f64, max: f64, n: usize) -> Vec<f64> {
+    endpoint_grid(min, max, n, |frac| min + frac * (max - min))
+}
+
+/// Shared `n`-point grid skeleton for [`linspace`] / [`logspace`]: the
+/// literal `min` / `max` are pushed at the endpoints (no roundoff
+/// drift), and `interior(frac)` supplies the interior points at
+/// `frac = i / (n - 1)`.
+fn endpoint_grid(min: f64, max: f64, n: usize, interior: impl Fn(f64) -> f64) -> Vec<f64> {
     if n == 0 {
         return Vec::new();
     }
@@ -46,8 +54,7 @@ pub fn linspace(min: f64, max: f64, n: usize) -> Vec<f64> {
         } else if i == n - 1 {
             grid.push(max);
         } else {
-            let frac = i as f64 / denom;
-            grid.push(min + frac * (max - min));
+            grid.push(interior(i as f64 / denom));
         }
     }
     grid
@@ -75,27 +82,11 @@ pub fn linspace(min: f64, max: f64, n: usize) -> Vec<f64> {
 /// assert!((g[2] - 100.0).abs() < 1e-12);
 /// ```
 pub fn logspace(min: f64, max: f64, n: usize) -> Vec<f64> {
-    if n == 0 {
-        return Vec::new();
-    }
-    if n == 1 {
-        return vec![min];
-    }
     let log_min = min.ln();
     let log_max = max.ln();
-    let denom = (n - 1) as f64;
-    let mut grid = Vec::with_capacity(n);
-    for i in 0..n {
-        if i == 0 {
-            grid.push(min);
-        } else if i == n - 1 {
-            grid.push(max);
-        } else {
-            let frac = i as f64 / denom;
-            grid.push((log_min + frac * (log_max - log_min)).exp());
-        }
-    }
-    grid
+    endpoint_grid(min, max, n, |frac| {
+        (log_min + frac * (log_max - log_min)).exp()
+    })
 }
 
 /// Linear interpolation of a tabulated function \\(y(x)\\) at a query
