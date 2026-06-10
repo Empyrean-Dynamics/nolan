@@ -185,6 +185,26 @@ pub struct LMConfig {
     /// solve fails with [`LMError::PersistentInvalidTrials`]. Must
     /// be ≥ 1.
     pub max_consecutive_invalid: usize,
+    /// Geodesic acceleration (Transtrum & Sethna 2012; GSL
+    /// `multifit_nlinear`): augment each trial step with the
+    /// second-order correction \\(\mathbf{h} = \mathbf{v} +
+    /// \tfrac{1}{2}\mathbf{a}\\), where \\((A + \mu D^2)\,
+    /// \mathbf{a} = -J^\top \mathbf{r}''_{vv}\\) and
+    /// \\(\mathbf{r}''_{vv}\\) is the problem-supplied directional
+    /// second derivative of the residuals along the velocity step
+    /// (see [`CostProblem::second_directional_derivative`]).
+    /// Dramatically reduces iteration counts on curved-valley
+    /// ("sloppy") cost surfaces. Default `false`; also inert while
+    /// the problem returns `None` from the hook or on the
+    /// normal-equations path (no Jacobian rows).
+    pub geodesic_acceleration: bool,
+    /// Acceleration acceptance guard (GSL `avmax`): the accelerated
+    /// step is used only when \\(\lVert\mathbf{a}\rVert_D /
+    /// \lVert\mathbf{v}\rVert_D \le \texttt{avmax}\\); beyond it
+    /// the truncated expansion is untrustworthy and the trial is
+    /// rejected through the normal μ escalation. Must be finite and
+    /// > 0 (default 0.75, GSL's default).
+    pub avmax: f64,
 }
 
 impl Default for LMConfig {
@@ -200,6 +220,8 @@ impl Default for LMConfig {
             xtol: 1e-8,
             ftol: 1.49e-8,
             max_consecutive_invalid: 5,
+            geodesic_acceleration: false,
+            avmax: 0.75,
         }
     }
 }
@@ -244,6 +266,22 @@ pub trait CostProblem<const N: usize> {
     /// evaluation. Diagnostics and counters only — nothing committed
     /// needs rolling back.
     fn on_step_rejected(&mut self, _x_trial: &[f64; N]) {}
+
+    /// Directional second derivative of the pre-weighted residuals
+    /// along `v` at `x`:
+    /// \\(\mathbf{r}''_{vv} = d^2\mathbf{r}_w(\mathbf{x} +
+    /// t\,\mathbf{v})/dt^2\big|_{t=0}\\), in the SAME row order as
+    /// the most recent full evaluation at `x`. Powers geodesic
+    /// acceleration ([`LMConfig::geodesic_acceleration`]); a single
+    /// one-parameter second-order jet evaluation along `v` suffices —
+    /// the full Hessian is never needed.
+    ///
+    /// `None` (the default) disables acceleration for this step. Must
+    /// not commit persistent state (same contract as
+    /// [`evaluate_cost`](Self::evaluate_cost)).
+    fn second_directional_derivative(&mut self, _x: &[f64; N], _v: &[f64; N]) -> Option<Vec<f64>> {
+        None
+    }
 }
 
 /// Residual-level problem: the driver assembles
@@ -376,6 +414,8 @@ pub struct LMSolution<const N: usize> {
     /// Trials rejected for `Err`/non-finite costs (including rolled-back
     /// acceptances).
     pub n_invalid_trials: usize,
+    /// Trials whose step carried the geodesic-acceleration correction.
+    pub n_accelerated_trials: usize,
     /// Final damping parameter.
     pub mu_final: f64,
     /// Whether a convergence criterion was met.
@@ -440,6 +480,11 @@ pub enum ConfigDefect {
     },
     /// `max_consecutive_invalid` must be ≥ 1.
     MaxConsecutiveInvalidZero,
+    /// `avmax` must be finite and > 0.
+    AvmaxNotPositive {
+        /// Offending value.
+        value: f64,
+    },
 }
 
 /// A prior violation.
@@ -687,6 +732,11 @@ struct AssembledSystem<const N: usize> {
     normal: [[f64; N]; N],
     /// Prior-augmented right-hand side g (so that A h = g).
     rhs: [f64; N],
+    /// Pre-weighted Jacobian rows (residual path only) — needed for
+    /// the geodesic-acceleration product \\(J^\top \mathbf{r}''_{vv}\\).
+    /// `None` on the normal-equations path, which therefore cannot
+    /// use acceleration.
+    jacobian: Option<Vec<[f64; N]>>,
 }
 
 /// How a full evaluation failed.
@@ -741,6 +791,7 @@ trait SystemSource<const N: usize> {
     fn constrain(&mut self, x: &[f64; N], delta: &mut [f64; N]);
     fn accepted(&mut self, x: &[f64; N]);
     fn rejected(&mut self, x_trial: &[f64; N]);
+    fn second_directional_derivative(&mut self, x: &[f64; N], v: &[f64; N]) -> Option<Vec<f64>>;
 }
 
 /// Residual-level adapter: assembles normal equations, owns the prior
@@ -856,6 +907,7 @@ impl<'a, P: ResidualProblem<N>, const N: usize> SystemSource<N> for ResidualSour
             data_cost,
             normal,
             rhs,
+            jacobian: Some(eval.jacobian),
         })
     }
 
@@ -876,6 +928,10 @@ impl<'a, P: ResidualProblem<N>, const N: usize> SystemSource<N> for ResidualSour
 
     fn rejected(&mut self, x_trial: &[f64; N]) {
         self.problem.on_step_rejected(x_trial);
+    }
+
+    fn second_directional_derivative(&mut self, x: &[f64; N], v: &[f64; N]) -> Option<Vec<f64>> {
+        self.problem.second_directional_derivative(x, v)
     }
 }
 
@@ -935,6 +991,7 @@ impl<'a, P: SystemProblem<N>, const N: usize> SystemSource<N> for DirectSource<'
             data_cost: sys.cost,
             normal: mat_symmetrize(&sys.normal),
             rhs: sys.rhs,
+            jacobian: None,
         })
     }
 
@@ -952,6 +1009,10 @@ impl<'a, P: SystemProblem<N>, const N: usize> SystemSource<N> for DirectSource<'
 
     fn rejected(&mut self, x_trial: &[f64; N]) {
         self.problem.on_step_rejected(x_trial);
+    }
+
+    fn second_directional_derivative(&mut self, x: &[f64; N], v: &[f64; N]) -> Option<Vec<f64>> {
+        self.problem.second_directional_derivative(x, v)
     }
 }
 
@@ -1088,6 +1149,10 @@ fn validate_config<E>(config: &LMConfig) -> Result<(), LMError<E>> {
         Some(ConfigDefect::FtolNegative { value: config.ftol })
     } else if config.max_consecutive_invalid == 0 {
         Some(ConfigDefect::MaxConsecutiveInvalidZero)
+    } else if !(config.avmax.is_finite() && config.avmax > 0.0) {
+        Some(ConfigDefect::AvmaxNotPositive {
+            value: config.avmax,
+        })
     } else {
         None
     };
@@ -1159,22 +1224,22 @@ fn effective_scale(d_j: f64, d_max: f64) -> f64 {
     if d_j > 0.0 { d_j } else { D_FLOOR_REL * d_max }
 }
 
-/// Solve \\((A + \mu D^2)\,\mathbf{h} = \mathbf{g}\\) through the
-/// equilibrated system \\((B + \mu I)\,\mathbf{h}' = D^{-1}\mathbf{g}\\),
-/// \\(B = D^{-1} A D^{-1}\\), \\(\mathbf{h} = D^{-1}\mathbf{h}'\\) —
-/// algebraically identical, but with an O(1) diagonal even when the
-/// parameters mix units spanning many orders of magnitude.
+/// The damped solves run in the **equilibrated basis**
+/// \\((B + \mu I)\,\mathbf{h}' = D^{-1}\mathbf{g}\\),
+/// \\(B = D^{-1} A D^{-1}\\) — algebraically identical to
+/// \\((A + \mu D^2)\,\mathbf{h} = \mathbf{g}\\), but with an O(1)
+/// diagonal even when the parameters mix units spanning many orders
+/// of magnitude.
 ///
-/// Returns `None` when the Cholesky factorization fails or the
-/// solution is non-finite; the driver treats that as a trial rejection
-/// (raise \\(\mu\\), retry) — never as a fallback to another solver.
-fn solve_damped<const N: usize>(
+/// Cholesky factor of the equilibrated damped system
+/// \\(B + \mu I = D^{-1} A D^{-1} + \mu I\\). One factorization
+/// serves both the velocity and (geodesic) acceleration solves.
+fn damped_factor<const N: usize>(
     normal: &[[f64; N]; N],
-    rhs: &[f64; N],
     d: &[f64; N],
     d_max: f64,
     mu: f64,
-) -> Option<[f64; N]> {
+) -> Option<[[f64; N]; N]> {
     let mut b = [[0.0_f64; N]; N];
     for i in 0..N {
         let di = effective_scale(d[i], d_max);
@@ -1188,8 +1253,19 @@ fn solve_damped<const N: usize>(
         }
         b[i][i] += mu;
     }
-    let l = mat_cholesky(&b)?;
+    mat_cholesky(&b)
+}
 
+/// Solve with a previously computed [`damped_factor`]:
+/// \\((A + \mu D^2)\,\mathbf{h} = \mathbf{g}\\) through the
+/// equilibrated triangular solves, mapping back via
+/// \\(\mathbf{h} = D^{-1}\mathbf{h}'\\).
+fn solve_with_factor<const N: usize>(
+    l: &[[f64; N]; N],
+    rhs: &[f64; N],
+    d: &[f64; N],
+    d_max: f64,
+) -> Option<[f64; N]> {
     let mut scaled_rhs = [0.0_f64; N];
     for i in 0..N {
         scaled_rhs[i] = rhs[i] / effective_scale(d[i], d_max);
@@ -1222,6 +1298,22 @@ fn solve_damped<const N: usize>(
         }
     }
     Some(h)
+}
+
+/// Solve \\((A + \mu D^2)\,\mathbf{h} = \mathbf{g}\\) —
+/// factorization plus triangular solves. Returns `None` when the
+/// factorization fails or the solution is non-finite; the driver
+/// treats that as a trial rejection (raise \\(\mu\\), retry) —
+/// never as a fallback to another solver.
+fn solve_damped<const N: usize>(
+    normal: &[[f64; N]; N],
+    rhs: &[f64; N],
+    d: &[f64; N],
+    d_max: f64,
+    mu: f64,
+) -> Option<[f64; N]> {
+    let l = damped_factor(normal, d, d_max, mu)?;
+    solve_with_factor(&l, rhs, d, d_max)
 }
 
 /// Predicted reduction of the objective for the **actual** (possibly
@@ -1390,6 +1482,7 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
     let mut n_cost_evals = 0usize;
     let mut n_rejected_trials = 0usize;
     let mut n_invalid_trials = 0usize;
+    let mut n_accelerated_trials = 0usize;
 
     let mut converged = false;
     let mut reason = TerminationReason::MaxIterations;
@@ -1479,7 +1572,11 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
         // ── Inner trial loop: same system, escalating μ ──
         let mut accepted_this_iteration = false;
         for _trial in 0..config.max_inner_trials {
-            let Some(h_natural) = solve_damped(&sys.normal, &sys.rhs, &d, d_max, mu) else {
+            // One factorization serves the velocity and (geodesic)
+            // acceleration solves at this μ.
+            let velocity = damped_factor(&sys.normal, &d, d_max, mu)
+                .and_then(|l| solve_with_factor(&l, &sys.rhs, &d, d_max).map(|h| (l, h)));
+            let Some((factor, h_natural)) = velocity else {
                 // Factorization failed or produced non-finite values:
                 // reject (raise μ) and retry — never bail, never fall
                 // back to a different solver.
@@ -1497,12 +1594,81 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
             };
 
             let mut h = h_natural;
-            source.constrain(&x, &mut h);
-            let clamped = h != h_natural;
 
-            // Predicted reduction from the ACTUAL step; pred ≤ 0 (or
-            // NaN) forces rejection — no blind division anywhere.
-            let pred = predicted_reduction(&h, &sys.normal, &sys.rhs);
+            // ── Geodesic acceleration (Transtrum & Sethna 2012) ──
+            // h = v + a/2 with (A + μD²) a = −Jᵀ r''_vv, where r''_vv
+            // is the problem-supplied directional second derivative of
+            // the residuals along v. Residual path only (needs the
+            // Jacobian rows); inert when the hook returns None.
+            if config.geodesic_acceleration
+                && let Some(jac) = sys.jacobian.as_ref()
+                && let Some(w) = source.second_directional_derivative(&x, &h_natural)
+            {
+                if w.len() != jac.len() {
+                    return Err(LMError::DimensionMismatch {
+                        iteration,
+                        residuals: w.len(),
+                        jacobian: jac.len(),
+                    });
+                }
+                let mut rhs_a = [0.0_f64; N];
+                for (w_i, row) in w.iter().zip(jac.iter()) {
+                    for j in 0..N {
+                        rhs_a[j] -= row[j] * w_i;
+                    }
+                }
+                if let Some(a) = solve_with_factor(&factor, &rhs_a, &d, d_max) {
+                    let v_norm = scaled_norm(&h_natural, &d);
+                    let a_norm = scaled_norm(&a, &d);
+                    if a_norm <= config.avmax * v_norm {
+                        for j in 0..N {
+                            h[j] += 0.5 * a[j];
+                        }
+                        n_accelerated_trials += 1;
+                    } else {
+                        // GSL avmax guard: the truncated expansion is
+                        // untrustworthy here — reject through the
+                        // normal μ escalation (no cost evaluation
+                        // spent).
+                        n_rejected_trials += 1;
+                        if mu < MU_SEED {
+                            mu = MU_SEED;
+                        }
+                        mu *= nu;
+                        nu *= 2.0;
+                        if mu > config.mu_max {
+                            reason = TerminationReason::DampingExhausted { mu };
+                            break 'outer;
+                        }
+                        continue;
+                    }
+                }
+                // A failed acceleration solve simply proceeds with the
+                // plain velocity step — v itself solved fine.
+            }
+
+            let h_unclamped = h;
+            source.constrain(&x, &mut h);
+            let clamped = h != h_unclamped;
+
+            // Predicted reduction. For unclamped steps the model
+            // decrease of the VELOCITY step is the right denominator —
+            // identical to the actual step without acceleration, and
+            // for accelerated steps the correction is an on-manifold
+            // re-tracing the quadratic model cannot see (judging the
+            // combined step against the quadratic model force-rejects
+            // exactly the accelerated steps that work: on Rosenbrock
+            // the combined step lands AT the minimum while the model
+            // predicts an increase along it — Transtrum & Sethna 2012,
+            // GSL lmaccel). A clamped step falls back to the general
+            // quadratic model on the ACTUAL step, as before; pred ≤ 0
+            // (or NaN) still forces rejection — no blind division
+            // anywhere.
+            let pred = if clamped {
+                predicted_reduction(&h, &sys.normal, &sys.rhs)
+            } else {
+                predicted_reduction(&h_natural, &sys.normal, &sys.rhs)
+            };
 
             let mut x_trial = [0.0_f64; N];
             for i in 0..N {
@@ -1703,6 +1869,7 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
         n_cost_evals,
         n_rejected_trials,
         n_invalid_trials,
+        n_accelerated_trials,
         mu_final: mu,
         converged,
         reason,
@@ -3352,6 +3519,187 @@ mod tests {
             x0.to_bits(),
             "committed state must still be the x0 commit, bit-for-bit"
         );
+    }
+
+    // ── Geodesic acceleration ──
+
+    /// Rosenbrock with the EXACT directional second derivative
+    /// supplied by the problem (what a one-parameter Jet2 evaluation
+    /// provides in production): r₁ = 10(x₂ − x₁²) has
+    /// ∂²r₁/∂x₁² = −20, so r''_vv = [−20 v₁², 0].
+    struct RosenbrockGeo {
+        hook_calls: std::cell::Cell<usize>,
+    }
+    impl CostProblem<2> for RosenbrockGeo {
+        type Error = TestError;
+        fn evaluate_cost(&mut self, x: &[f64; 2]) -> Result<f64, TestError> {
+            let r1 = 10.0 * (x[1] - x[0] * x[0]);
+            let r2 = 1.0 - x[0];
+            Ok(r1 * r1 + r2 * r2)
+        }
+        fn second_directional_derivative(
+            &mut self,
+            _x: &[f64; 2],
+            v: &[f64; 2],
+        ) -> Option<Vec<f64>> {
+            self.hook_calls.set(self.hook_calls.get() + 1);
+            Some(vec![-20.0 * v[0] * v[0], 0.0])
+        }
+    }
+    impl ResidualProblem<2> for RosenbrockGeo {
+        fn evaluate(&mut self, x: &[f64; 2]) -> Result<NLLSEvaluation<2>, TestError> {
+            let r1 = 10.0 * (x[1] - x[0] * x[0]);
+            let r2 = 1.0 - x[0];
+            Ok(NLLSEvaluation {
+                residuals: vec![r1, r2],
+                jacobian: vec![[-20.0 * x[0], 10.0], [-1.0, 0.0]],
+                cost: r1 * r1 + r2 * r2,
+            })
+        }
+    }
+
+    /// Acceleration must reach the same minimum in fewer cost
+    /// evaluations on the canonical curved-valley problem.
+    #[test]
+    fn test_geodesic_accelerates_rosenbrock() {
+        let run = |geodesic: bool| {
+            let mut cfg = config();
+            cfg.geodesic_acceleration = geodesic;
+            cfg.max_iterations = 500;
+            let mut p = RosenbrockGeo {
+                hook_calls: std::cell::Cell::new(0),
+            };
+            let sol = solve(&mut p, [-1.2, 1.0], &cfg, None).unwrap();
+            (sol, p.hook_calls.get())
+        };
+        let (off, off_calls) = run(false);
+        let (on, on_calls) = run(true);
+        assert_eq!(off_calls, 0, "hook must not be called with the flag off");
+        assert!(on_calls > 0, "hook must be exercised with the flag on");
+        assert!(off.converged && on.converged);
+        assert!((on.x[0] - 1.0).abs() < 1e-6 && (on.x[1] - 1.0).abs() < 1e-6);
+        assert!((off.x[0] - 1.0).abs() < 1e-6 && (off.x[1] - 1.0).abs() < 1e-6);
+        assert!(on.n_accelerated_trials > 0);
+        assert!(
+            on.n_cost_evals < off.n_cost_evals,
+            "acceleration must reduce cost evaluations: on={} off={}",
+            on.n_cost_evals,
+            off.n_cost_evals
+        );
+    }
+
+    /// An untrustworthy expansion (huge curvature) trips the avmax
+    /// guard: the trial is rejected through μ escalation with no cost
+    /// spent, no acceleration is ever applied, and the solve still
+    /// finishes honestly.
+    #[test]
+    fn test_geodesic_avmax_guard_rejects_huge_curvature() {
+        struct HugeCurvature;
+        impl CostProblem<1> for HugeCurvature {
+            type Error = TestError;
+            fn evaluate_cost(&mut self, x: &[f64; 1]) -> Result<f64, TestError> {
+                Ok((x[0] - 3.0) * (x[0] - 3.0))
+            }
+            fn second_directional_derivative(
+                &mut self,
+                _x: &[f64; 1],
+                _v: &[f64; 1],
+            ) -> Option<Vec<f64>> {
+                Some(vec![1e12])
+            }
+        }
+        impl ResidualProblem<1> for HugeCurvature {
+            fn evaluate(&mut self, x: &[f64; 1]) -> Result<NLLSEvaluation<1>, TestError> {
+                Ok(NLLSEvaluation {
+                    residuals: vec![x[0] - 3.0],
+                    jacobian: vec![[1.0]],
+                    cost: (x[0] - 3.0) * (x[0] - 3.0),
+                })
+            }
+        }
+        let mut cfg = config();
+        cfg.geodesic_acceleration = true;
+        let sol = solve(&mut HugeCurvature, [0.0], &cfg, None).unwrap();
+        assert_eq!(sol.n_accelerated_trials, 0);
+        assert!(sol.n_rejected_trials > 0, "avmax violations must reject");
+        // The guard never blocks honest termination.
+        assert!(!sol.converged || (sol.x[0] - 3.0).abs() < 1e-6, "{sol:?}");
+    }
+
+    /// A hook returning the wrong number of rows is a contract
+    /// violation — loud, on its own axis.
+    #[test]
+    fn test_geodesic_wrong_length_is_error() {
+        struct WrongLen;
+        impl CostProblem<1> for WrongLen {
+            type Error = TestError;
+            fn evaluate_cost(&mut self, x: &[f64; 1]) -> Result<f64, TestError> {
+                Ok((x[0] - 3.0) * (x[0] - 3.0))
+            }
+            fn second_directional_derivative(
+                &mut self,
+                _x: &[f64; 1],
+                _v: &[f64; 1],
+            ) -> Option<Vec<f64>> {
+                Some(vec![0.0, 0.0, 0.0])
+            }
+        }
+        impl ResidualProblem<1> for WrongLen {
+            fn evaluate(&mut self, x: &[f64; 1]) -> Result<NLLSEvaluation<1>, TestError> {
+                Ok(NLLSEvaluation {
+                    residuals: vec![x[0] - 3.0],
+                    jacobian: vec![[1.0]],
+                    cost: (x[0] - 3.0) * (x[0] - 3.0),
+                })
+            }
+        }
+        let mut cfg = config();
+        cfg.geodesic_acceleration = true;
+        let err = solve(&mut WrongLen, [0.0], &cfg, None).unwrap_err();
+        assert!(matches!(err, LMError::DimensionMismatch { .. }), "{err:?}");
+    }
+
+    /// The normal-equations path carries no Jacobian rows, so the
+    /// hook must never fire there even with the flag on.
+    #[test]
+    fn test_geodesic_inert_on_system_path() {
+        struct CountingQuad {
+            inner: QuadSystem,
+            hook_calls: usize,
+        }
+        impl CostProblem<2> for CountingQuad {
+            type Error = TestError;
+            fn evaluate_cost(&mut self, x: &[f64; 2]) -> Result<f64, TestError> {
+                self.inner.evaluate_cost(x)
+            }
+            fn second_directional_derivative(
+                &mut self,
+                _x: &[f64; 2],
+                _v: &[f64; 2],
+            ) -> Option<Vec<f64>> {
+                self.hook_calls += 1;
+                Some(vec![0.0])
+            }
+        }
+        impl SystemProblem<2> for CountingQuad {
+            fn evaluate_system(&mut self, x: &[f64; 2]) -> Result<SystemEvaluation<2>, TestError> {
+                self.inner.evaluate_system(x)
+            }
+        }
+        let mut cfg = config();
+        cfg.geodesic_acceleration = true;
+        let mut p = CountingQuad {
+            inner: QuadSystem {
+                q: [[2.0, 0.0], [0.0, 8.0]],
+                a: [1.0, 2.0],
+                c: 3.0,
+            },
+            hook_calls: 0,
+        };
+        let sol = solve_system(&mut p, [10.0, -4.0], &cfg).unwrap();
+        assert!(sol.converged);
+        assert_eq!(p.hook_calls, 0, "system path must never call the hook");
+        assert_eq!(sol.n_accelerated_trials, 0);
     }
 
     // ── Determinism ──
