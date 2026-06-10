@@ -4,7 +4,7 @@ pub fn hess_index(i: usize, j: usize) -> Option<usize> {
     if i < j {
         hess_index(j, i)
     } else {
-        Some(i * (i + 1) / 2 + j)
+        Some(hess_idx(i, j))
     }
 }
 
@@ -99,7 +99,7 @@ pub fn tens_index(i: usize, j: usize, k: usize) -> Option<usize> {
     if a < b {
         std::mem::swap(&mut a, &mut b);
     }
-    Some(a * (a + 1) * (a + 2) / 6 + b * (b + 1) / 2 + c)
+    Some(tens_idx(a, b, c))
 }
 
 /// Third-order tensor index assuming canonical ordering (i >= j >= k).
