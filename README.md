@@ -132,7 +132,7 @@ type HyperHyperDual = Jet3<2, 3, 4>;    // Two-variable third derivatives
 - **`SecondOrder`** — Second derivatives: `hess(i, j)`. Implemented for `Jet2`, `Jet3`.
 - **`ThirdOrder`** — Third derivatives: `tens(i, j, k)`. Implemented for `Jet3`.
 - **`DifferentiableMath`** — Transcendental functions: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `exp`, `ln`, `log`, `sqrt`, `powf`, `powi`, `abs`.
-- **`AutoDiff`** — Marker combining all of the above. Use this as a generic bound.
+- **`AutoDiff`** — Marker combining `Differentiable`, `FirstOrder`, and `DifferentiableMath` (the surface every jet order shares — `Jet1` implements it, so it does NOT include `SecondOrder`/`ThirdOrder`). Use this as a generic bound for order-agnostic code.
 
 ## Generic Programming
 
