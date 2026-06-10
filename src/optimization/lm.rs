@@ -304,11 +304,11 @@ pub enum TerminationReason {
     /// Scaled gradient below `gtol` at an accepted point
     /// (\\(|g_j| \le \texttt{gtol}\, d_j \sqrt{\Phi}\\) for all j).
     GradientTolerance,
-    /// The natural (first-trial, **unclamped**) step at the current
-    /// damping fell below `qtol`/`xtol`; \\(\mathbf{x}\\) unchanged.
+    /// The UNDAMPED Gauss-Newton step at the accepted point fell
+    /// below `qtol`/`xtol`; \\(\mathbf{x}\\) unchanged. Measured on
+    /// the undamped step deliberately: a μ-shrunken step says nothing
+    /// about stationarity.
     StepTolerance,
-    /// The last **accepted, unclamped** step fell below `qtol`/`xtol`.
-    AcceptedStepTolerance,
     /// Actual and predicted reduction of the last accepted step both
     /// below `ftol`·Φ with a consistent (ρ ≤ 2) model.
     CostTolerance,
@@ -1311,11 +1311,9 @@ fn covariance<const N: usize>(
 
 /// Bookkeeping for the most recent accepted step, consumed by the
 /// convergence tests at the next outer iteration.
-struct AcceptedStep<const N: usize> {
+struct AcceptedStep {
     /// hᵀAh under the (augmented, undamped) A that produced the step.
     qnorm: f64,
-    /// The accepted step itself.
-    h: [f64; N],
     /// Whether `constrain_step` modified the step (a clamped step can
     /// never declare convergence).
     clamped: bool,
@@ -1384,7 +1382,7 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
     };
     let mut nu = 2.0_f64;
 
-    let mut last_accepted: Option<AcceptedStep<N>> = None;
+    let mut last_accepted: Option<AcceptedStep> = None;
     let mut consecutive_invalid = 0usize;
     let mut last_invalid_source: Option<S::Error> = None;
 
@@ -1426,41 +1424,61 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
             }
         }
 
-        if let Some(acc) = &last_accepted {
-            // Accepted-step tolerance: only an UNCLAMPED accepted step
-            // may declare convergence (a clamp shrinks steps for
-            // reasons unrelated to stationarity).
-            if !acc.clamped {
-                let q_pass = config.qtol > 0.0 && acc.qnorm <= config.qtol;
-                let x_pass = config.xtol > 0.0
-                    && scaled_norm(&acc.h, &d) <= config.xtol * (scaled_norm(&x, &d) + config.xtol);
-                if q_pass || x_pass {
+        // Step- and cost-based convergence are judged against the
+        // UNDAMPED Gauss-Newton step at the accepted point. A step
+        // that is tiny only because μ crushed it says nothing about
+        // stationarity: on stiff valleys the rejections inflate μ by
+        // orders of magnitude, and any μ-shrunken accepted step would
+        // read as "converged" at an arbitrarily bad iterate (observed
+        // on the 2020 CD3 capture-spanning fit at χ² ~ 1e12). The
+        // undamped step is also what the legacy solver's step test
+        // effectively measured (λ ≈ 1e-6 at convergence).
+        //
+        // A singular undamped system simply skips these tests — the
+        // gradient and budget criteria still terminate.
+        if let Some(h_gn) = solve_damped(&sys.normal, &sys.rhs, &d, d_max, 0.0) {
+            let q_gn = quadratic_form(&h_gn, &sys.normal);
+            let q_pass = config.qtol > 0.0 && q_gn <= config.qtol;
+            let x_pass = config.xtol > 0.0
+                && scaled_norm(&h_gn, &d) <= config.xtol * (scaled_norm(&x, &d) + config.xtol);
+            if q_pass || x_pass {
+                converged = true;
+                reason = TerminationReason::StepTolerance;
+                break 'outer;
+            }
+
+            // Cost tolerance (MINPACK info=1 analogue): the actual AND
+            // predicted reduction of the last accepted (unclamped)
+            // step both ≤ ftol·Φ_prev with a consistent model
+            // (ρ ≤ 2) — AND the undamped step's own predicted gain is
+            // below the same threshold, so a μ-starved step cannot
+            // manufacture a plateau (for the exact GN step the
+            // predicted reduction is \(\mathbf{h}^T \mathbf{g}\),
+            // but the general form is used for uniformity).
+            if let Some(acc) = &last_accepted
+                && !acc.clamped
+                && config.ftol > 0.0
+                && acc.prev_cost > 0.0
+            {
+                let threshold = config.ftol * acc.prev_cost;
+                let ratio_ok = acc.pred > 0.0 && acc.actred <= 2.0 * acc.pred;
+                let gn_exhausted =
+                    predicted_reduction(&h_gn, &sys.normal, &sys.rhs) <= config.ftol * sys.cost;
+                if acc.actred.abs() <= threshold
+                    && acc.pred <= threshold
+                    && ratio_ok
+                    && gn_exhausted
+                {
                     converged = true;
-                    reason = TerminationReason::AcceptedStepTolerance;
+                    reason = TerminationReason::CostTolerance;
                     break 'outer;
-                }
-                // Cost tolerance (MINPACK info=1 analogue): actual
-                // AND predicted reduction both ≤ ftol·Φ_prev, with
-                // the model consistent (ρ ≤ 2). Gated, like the step
-                // tests, on the step being UNCLAMPED: a clamp shrinks
-                // reductions for reasons unrelated to stationarity,
-                // and a clamped step must never manufacture
-                // convergence (defect-5 rule).
-                if config.ftol > 0.0 && acc.prev_cost > 0.0 {
-                    let threshold = config.ftol * acc.prev_cost;
-                    let ratio_ok = acc.pred > 0.0 && acc.actred <= 2.0 * acc.pred;
-                    if acc.actred.abs() <= threshold && acc.pred <= threshold && ratio_ok {
-                        converged = true;
-                        reason = TerminationReason::CostTolerance;
-                        break 'outer;
-                    }
                 }
             }
         }
 
         // ── Inner trial loop: same system, escalating μ ──
         let mut accepted_this_iteration = false;
-        for trial in 0..config.max_inner_trials {
+        for _trial in 0..config.max_inner_trials {
             let Some(h_natural) = solve_damped(&sys.normal, &sys.rhs, &d, d_max, mu) else {
                 // Factorization failed or produced non-finite values:
                 // reject (raise μ) and retry — never bail, never fall
@@ -1477,22 +1495,6 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                 }
                 continue;
             };
-
-            // Natural-step test (first trial only, UNCLAMPED step):
-            // an already-stationary iterate exits here with x
-            // unchanged. A clamped step never reaches this test.
-            if trial == 0 {
-                let q0 = quadratic_form(&h_natural, &sys.normal);
-                let q_pass = config.qtol > 0.0 && q0 <= config.qtol;
-                let x_pass = config.xtol > 0.0
-                    && scaled_norm(&h_natural, &d)
-                        <= config.xtol * (scaled_norm(&x, &d) + config.xtol);
-                if q_pass || x_pass {
-                    converged = true;
-                    reason = TerminationReason::StepTolerance;
-                    break 'outer;
-                }
-            }
 
             let mut h = h_natural;
             source.constrain(&x, &mut h);
@@ -1608,7 +1610,6 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
 
                     last_accepted = Some(AcceptedStep {
                         qnorm: quadratic_form(&h, &sys.normal),
-                        h,
                         clamped,
                         prev_cost: sys.cost,
                         pred,
@@ -2389,19 +2390,20 @@ mod tests {
 
     #[test]
     fn test_reason_cost_tolerance() {
-        // r = x² + 1: cost has a flat positive floor at x = 0, the
-        // gradient never vanishes fast and steps keep getting
-        // rejected/shrunk — the ftol plateau test must catch it.
+        // A genuine cost plateau: an irreducible constant residual
+        // dominates Φ near the minimum, so the relative reductions —
+        // including the UNDAMPED step's own predicted gain — fall
+        // below ftol·Φ while the gradient and step tests are disabled.
         let mut cfg = config();
         cfg.gtol = 0.0;
         cfg.qtol = 0.0;
         cfg.xtol = 0.0;
         cfg.max_iterations = 500;
-        let mut p = Tracked::new(|x: &[f64; 1]| (vec![x[0] * x[0] + 1.0], vec![[2.0 * x[0]]]));
-        let sol = solve(&mut p, [0.1], &cfg, None).unwrap();
+        let mut p = Tracked::new(|x: &[f64; 1]| (vec![x[0] - 3.0, 10.0], vec![[1.0], [0.0]]));
+        let sol = solve(&mut p, [0.0], &cfg, None).unwrap();
         assert!(sol.converged, "{:?}", sol.reason);
         assert_eq!(sol.reason, TerminationReason::CostTolerance);
-        assert!(sol.x[0].abs() < 0.1, "x={}", sol.x[0]);
+        assert!((sol.x[0] - 3.0).abs() < 1e-2, "x={}", sol.x[0]);
     }
 
     // ── Clamps ──
@@ -2710,50 +2712,62 @@ mod tests {
 
     // ── Acceptance-test edge cases ──
 
-    /// AcceptedStepTolerance is reachable only when the accepted step
-    /// is SMALLER than the natural first-trial step (which already
-    /// passed its own test): force exactly one invalid first trial so
-    /// the accepted second trial runs at escalated μ, landing its
-    /// quadratic form between the two thresholds.
+    /// THE false-convergence regression that the 2020 CD3 capture-
+    /// spanning fit exposed: on a stiff valley the rejections inflate
+    /// μ by orders of magnitude, and a μ-crushed accepted step has a
+    /// tiny quadratic form at an arbitrarily BAD iterate. Step-based
+    /// convergence must therefore be judged on the UNDAMPED
+    /// Gauss-Newton step — a μ-starved accepted step must never read
+    /// as "converged".
+    ///
+    /// Adversarial cost: improvements exist only at micro-scale
+    /// (|h| < 1e-7), so every natural-scale trial is rejected, μ
+    /// inflates, and eventually micro-steps get accepted. The undamped
+    /// GN step (and the gradient) remain large throughout — the solver
+    /// must NOT declare convergence, no matter how generous qtol is.
     #[test]
-    fn test_reason_accepted_step_tolerance() {
-        struct LieOnce {
-            calls: usize,
-        }
-        impl CostProblem<1> for LieOnce {
-            type Error = TestError;
-            fn evaluate_cost(&mut self, x: &[f64; 1]) -> Result<f64, TestError> {
-                self.calls += 1;
-                if self.calls == 1 {
-                    return Ok(f64::INFINITY);
-                }
-                Ok((x[0] - 3.0) * (x[0] - 3.0))
+    fn test_mu_starved_accepted_step_is_not_convergence() {
+        // Positional cost: a microscopic basin at the origin inside a
+        // wall — every macro trial is rejected (cost rises), only
+        // |x| < 1e-7 micro-steps improve, while the residual/Jacobian
+        // claim a huge gradient toward 1000 (so the undamped GN step
+        // and the gradient stay enormous).
+        fn stiff_cost(x: f64) -> f64 {
+            if x.abs() < 1e-7 {
+                1e6 - 1e-3 * (1e-7 - x.abs()) / 1e-7
+            } else {
+                1e6 + 1.0
             }
         }
-        impl ResidualProblem<1> for LieOnce {
+        struct StiffValley;
+        impl CostProblem<1> for StiffValley {
+            type Error = TestError;
+            fn evaluate_cost(&mut self, x: &[f64; 1]) -> Result<f64, TestError> {
+                Ok(stiff_cost(x[0]))
+            }
+        }
+        impl ResidualProblem<1> for StiffValley {
             fn evaluate(&mut self, x: &[f64; 1]) -> Result<NLLSEvaluation<1>, TestError> {
                 Ok(NLLSEvaluation {
-                    residuals: vec![x[0] - 3.0],
+                    residuals: vec![x[0] - 1000.0],
                     jacobian: vec![[1.0]],
-                    cost: (x[0] - 3.0) * (x[0] - 3.0),
+                    cost: stiff_cost(x[0]),
                 })
             }
         }
-        // Natural step at μ₀=1e-3: h = 3/1.001, q₀ = 8.9820… > qtol.
-        // After the invalid trial μ = 2e-3: h = 3/1.002, q = 8.9641…
-        // ≤ qtol → accepted; next outer iteration fires
-        // AcceptedStepTolerance before any new trial.
         let mut cfg = config();
         cfg.gtol = 0.0;
         cfg.xtol = 0.0;
         cfg.ftol = 0.0;
-        cfg.qtol = 8.97;
-        let mut p = LieOnce { calls: 0 };
-        let sol = solve(&mut p, [0.0], &cfg, None).unwrap();
-        assert!(sol.converged, "{:?}", sol.reason);
-        assert_eq!(sol.reason, TerminationReason::AcceptedStepTolerance);
-        assert!(sol.n_invalid_trials >= 1);
-        assert!(sol.accepted_step_qnorm.unwrap() <= 8.97);
+        cfg.qtol = 1.0; // generous: any micro-step is far below this
+        cfg.max_iterations = 30;
+        let sol = solve(&mut StiffValley, [0.0], &cfg, None).unwrap();
+        // Whatever the budget outcome, a step-based "converged" at the
+        // garbage iterate is forbidden.
+        assert_ne!(sol.reason, TerminationReason::StepTolerance, "{sol:?}");
+        assert_ne!(sol.reason, TerminationReason::CostTolerance, "{sol:?}");
+        assert!(!sol.converged, "{:?}", sol.reason);
+        assert!(sol.x[0].abs() < 1.0, "stayed near start: {}", sol.x[0]);
     }
 
     /// Monotonicity guard: when the trial cost claims an improvement
