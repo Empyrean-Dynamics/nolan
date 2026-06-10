@@ -40,7 +40,7 @@ The repo and internal codename stay `nolan`.
 
 ```toml
 [dependencies]
-hyperjet = "1.8.0"
+hyperjet = "1.9.0"
 ```
 ```rust
 use hyperjet::jets::Jet1;
@@ -51,7 +51,7 @@ Internal Empyrean callers can alias the dep back to `nolan` so existing
 
 ```toml
 [dependencies]
-nolan = { package = "hyperjet", version = "1.8.0" }
+nolan = { package = "hyperjet", version = "1.9.0" }
 ```
 ```rust,ignore
 use nolan::jets::Jet1;
@@ -288,53 +288,76 @@ The `RegularizationReport<N>` and `TikhonovReport<N>` structs are
 
 ## Optimization
 
-Generic nonlinear least-squares solver (Gauss-Newton / Levenberg-Marquardt):
+Gain-ratio Levenberg-Marquardt driver (`optimization::lm`) — an
+accept/reject trust-region-style solver with Nielsen damping and Moré
+diagonal scaling, derived from Madsen-Nielsen-Tingleff (2004), Nielsen
+(1999), Moré (1978), and the MINPACK `lmder` structure:
 
 ```rust,ignore
-use hyperjet::optimization::*;
+use hyperjet::optimization::lm::{solve_nlls, LMConfig, NLLSEvaluation};
 
 let solution = solve_nlls(
     |x: &[f64; 3]| {
-        // Return residuals + Jacobian at x
-        NLLSEvaluation { residuals, jacobian, cost }
+        // Full evaluation: residuals + Jacobian + cost at x
+        Ok::<_, MyError>(NLLSEvaluation { residuals, jacobian, cost })
+    },
+    |x: &[f64; 3]| {
+        // Trial cost only (same objective; rejected trials never
+        // pay for a Jacobian)
+        Ok::<_, MyError>(cost_at(x))
     },
     [0.0; 3],           // initial guess
-    &NLLSConfig::default(),
+    &LMConfig::default(),
     None,                // optional Bayesian prior
-).unwrap();
+)?;
 
 println!("x = {:?}, cost = {}", solution.x, solution.cost);
 ```
 
-For stateful problems, implement the `NLLSProblem<N>` trait:
+Stateful problems implement `ResidualProblem<N>` (or, for assembled
+normal-equation systems such as Schur-reduced fits,
+`SystemProblem<N>` via `lm::solve_system`):
 
 ```rust,ignore
-impl NLLSProblem<6> for MyProblem {
-    fn evaluate(&mut self, x: &[f64; 6]) -> NLLSEvaluation<6> {
-        // Propagate, compute residuals, extract Jacobian
-    }
+impl CostProblem<6> for MyProblem {
+    type Error = MyError;
+    fn evaluate_cost(&mut self, x: &[f64; 6]) -> Result<f64, MyError> { ... }
 
-    // Optional: clamp each GN / LM step before it is applied. Useful
-    // when the linear model overshoots its region of validity — e.g.,
-    // orbit determination with rough seeds where a single unconstrained
-    // step propagates to absurd epochs. Default impl is a no-op.
-    fn constrain_step(&mut self, x: &[f64; 6], delta: &mut [f64; 6]) {
-        let r_mag = (x[0].powi(2) + x[1].powi(2) + x[2].powi(2)).sqrt();
-        let dr = (delta[0].powi(2) + delta[1].powi(2) + delta[2].powi(2)).sqrt();
-        let max_dr = 0.5 * r_mag.max(1e-5);
-        if dr > max_dr {
-            let s = max_dr / dr;
-            for k in 0..3 { delta[k] *= s; }
-        }
-        // ...and similarly for the velocity subvector.
-    }
+    // Optional: clamp a proposed step. The driver computes the
+    // predicted reduction from the clamped step, and a clamped step
+    // can never declare convergence by itself.
+    fn constrain_step(&mut self, x: &[f64; 6], delta: &mut [f64; 6]) { ... }
+
+    // Two-phase lifecycle: persistent state (caches, diagnostics)
+    // commits ONLY on acceptance, so committed state always matches
+    // the retained iterate.
+    fn on_step_accepted(&mut self, x: &[f64; 6]) { ... }
+    fn on_step_rejected(&mut self, x_trial: &[f64; 6]) { ... }
 }
-let solution = solve(&mut problem, x0, &config, prior)?;
+impl ResidualProblem<6> for MyProblem {
+    fn evaluate(&mut self, x: &[f64; 6]) -> Result<NLLSEvaluation<6>, MyError> { ... }
+}
+let solution = lm::solve(&mut problem, x0, &config, prior)?;
 ```
 
-Features: LM adaptive damping, Bayesian prior augmentation, second-order
-Hessian correction (`solve2`), formal covariance extraction, optional
-problem-driven step bounds.
+Features: gain-ratio accept/reject with Nielsen damping (no
+initial-damping dead zones — convergence is insensitive to `tau` by
+construction), Moré running-max diagonal scaling
+with equilibrated Cholesky solves (mixed-unit parameter vectors
+spanning ~28 orders of magnitude), step/cost convergence judged
+against the undamped Gauss-Newton step, opt-in geodesic acceleration
+(Transtrum-Sethna second-order steps from a problem-supplied
+directional second derivative — one single-parameter `Jet2`
+evaluation), driver-owned Bayesian priors entering both the normal
+equations and the compared costs, an explicit per-axis error taxonomy
+(covariance failure is carried in the solution as a `Result`, never
+fabricated zeros), and bit-deterministic fixed-order arithmetic with a
+golden-trace regression test.
+
+The legacy always-accept solver (`optimization::{solve, solve2,
+NLLSConfig, ...}`) remains available for migration and is scheduled
+for removal in the next major release — new code should use
+`optimization::lm`.
 
 ## Statistics
 
