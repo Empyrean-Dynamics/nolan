@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780110069658,
+  "lastUpdate": 1781153426110,
   "repoUrl": "https://github.com/Empyrean-Dynamics/nolan",
   "entries": {
     "Nolan Benchmarks": [
@@ -9359,6 +9359,642 @@ window.BENCHMARK_DATA = {
             "name": "wrap_360_x64",
             "value": 260,
             "range": "± 0",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "moeyensj@users.noreply.github.com",
+            "name": "Joachim Moeyens",
+            "username": "moeyensj"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6f700d89d5fa9d9fa604fb9319316995ada6d1be",
+          "message": "Replace the always-accept NLLS solver with a gain-ratio Levenberg-Marquardt driver (#25)\n\n* Add gain-ratio Levenberg-Marquardt driver (optimization::lm)\n\nNew accept/reject LM solver: Nielsen damping (nu0 = 2, mu reseeded on\nrejection so no absorbing state exists), More running-max diagonal\nscaling with honest scales (the relative floor applies only at division\nsites, only to exactly-zero columns), equilibrated Cholesky solve,\npredicted reduction computed on the actual (possibly clamped) step with\npred <= 0 as forced rejection, driver-owned prior entering both compared\ncosts, state committed only on acceptance with rollback and a\nmonotonicity guard, an explicit per-axis error taxonomy (covariance\nfailure is carried in the solution, never fabricated zeros), and\nMINPACK-style termination: cosine gradient test on current column norms,\nqtol/xtol step tests on unclamped steps only, ftol with the rho <= 2\nmodel-consistency guard. Costs are validated non-negative on both paths\nso a Schur profiled objective rounding negative can never NaN-poison the\ngradient test into false convergence.\n\nTwo entry points share one driver core: solve (residual level,\nResidualProblem) and solve_system (normal-equations level,\nSystemProblem) for Schur-reduced consumers. The legacy nlls module is\nuntouched; consumers migrate to lm:: before nlls is removed in a later\nmajor release.\n\n48 unit tests: a tau-insensitivity property sweep, golden-trace\nbit-determinism pins (mu, cost, x, and the full accepted/rejected\niterate sequences as f64 bits), per-variant error coverage, INF/NaN\ntrial recovery, clamp false-convergence guards, prior MAP regressions,\nand an unclamped convergence test on the overshoot problem that the\nalways-accept solver provably diverges on.\n\nDerived from Madsen, Nielsen & Tingleff (2004), Nielsen (1999),\nMore (1978), and the MINPACK lmder structure.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Judge step and cost convergence against the undamped Gauss-Newton step\n\nA step that is tiny only because mu crushed it says nothing about\nstationarity: on stiff valleys the rejections inflate mu by orders of\nmagnitude, and any mu-shrunken accepted step read as converged at an\narbitrarily bad iterate (observed on the 2020 CD3 capture-spanning\norbit fit at chi-squared ~ 1e12 during validation of the scott\nmigration). Step-based convergence is now measured on the undamped\nGauss-Newton step at the accepted point (one extra Cholesky per outer\niteration; a singular undamped system skips the test), the ftol\nplateau exit additionally requires the undamped step's own predicted\ngain to be below ftol times the cost, and the accepted-step shortcut\n(AcceptedStepTolerance) is removed as a false-convergence vector.\nThis also matches the legacy solver's effective semantics, whose step\ntest ran at lambda ~ 1e-6.\n\nReplaces the accepted-step unit test with a mu-starvation regression\n(micro-basin adversary: rejected macro trials inflate mu, accepted\nmicro-steps must never declare convergence) and rebuilds the\nCostTolerance test around a genuine constant-residual plateau. The\ngolden bit-determinism trace is unchanged.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Add geodesic acceleration to the gain-ratio LM driver\n\nTranstrum-Sethna second-order steps (GSL lmaccel): the trial step\nbecomes h = v + a/2, where the acceleration solves\n(A + mu D^2) a = -J^T r_vv'' against the problem-supplied directional\nsecond derivative of the residuals along the velocity step, reusing the\nvelocity solve's Cholesky factorization. Guarded by the GSL avmax test\n(default 0.75, here in the More-scaled D-norm to stay coherent with\nmixed-unit parameter vectors); a violation rejects the trial through\nthe normal mu escalation with no cost evaluation spent.\n\nThe gain-ratio denominator for unclamped steps is the VELOCITY step's\nmodel decrease: the acceleration is an on-manifold re-tracing that the\nquadratic model cannot see, and judging the combined step against that\nmodel force-rejects exactly the accelerated steps that work (from\nRosenbrock's standard start the combined step lands at the minimum\nwhile the model predicts an increase along it). Clamped steps keep the\ngeneral quadratic model on the actual step.\n\nOff by default (LMConfig::geodesic_acceleration) and inert unless the\nproblem implements CostProblem::second_directional_derivative — in\nproduction a single one-parameter second-order jet evaluation along v,\nan AD capability finite-difference codes lack. The normal-equations\npath carries no Jacobian rows and never accelerates. The golden\nbit-determinism trace is unchanged with the feature off.\n\nTests: Rosenbrock with the exact directional second derivative\nconverges in fewer cost evaluations than the unaccelerated run; avmax\nguard rejects untrustworthy curvature without spending evaluations;\nwrong-length hook output is a loud DimensionMismatch; the system path\nnever calls the hook; flag-off runs never call the hook.\n\nDerived from Transtrum & Sethna (2012), arXiv:1201.5885, and the GSL\nmultifit_nlinear lmaccel formulation.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Document the gain-ratio LM driver in the README\n\nThe Optimization section now presents optimization::lm as the primary\nnonlinear least-squares interface — the closure and trait examples,\nthe two-phase accept/reject lifecycle, the system-level entry point\nfor assembled normal-equation problems, and the feature set (Nielsen\ndamping, More scaling with equilibrated solves, undamped-step\nconvergence, geodesic acceleration, driver-owned priors, per-axis\nerrors, bit determinism) — and notes the legacy always-accept solver\nas migration-only, scheduled for removal in the next major release.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Remove the legacy always-accept NLLS solver\n\nDelete optimization::nlls entirely: solve, solve2, solve_nlls (legacy\nform), NLLSConfig, NLLSMethod, NLLSError, NLLSSolution, NLLSProblem,\nNLLSProblem2, NLLSEvaluation2, and ConvergenceReason are gone. The\ngain-ratio driver in optimization::lm is now the only solver.\n\n- Move the NLLSEvaluation and NLLSPrior definitions (still part of the\n  lm API) from nlls.rs into lm.rs, replacing the re-export.\n- Rewrite the optimization module docs around lm; the module-level\n  example now uses lm::solve_nlls.\n- Convert the legacy cross-check test into a known-answer test against\n  the exact analytic solution of the linear fit.\n- Drop the README paragraph describing the legacy solver as available\n  for migration.\n\nThe version deliberately stays 1.9.0: the crate has no external\nconsumers of the removed API, so the maintainer chose not to take a\nmajor bump for this removal.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Deduplicate the LM driver's internal rejection and error paths\n\n- Extract the Nielsen rejection escalation (μ ← max(μ, μ_seed)·ν,\n  ν ← 2ν, budget check) into escalate_mu, replacing four copies in the\n  inner trial loop.\n- Extract the PersistentInvalidTrials construction shared by the\n  trial-cost and rollback paths into persistent_invalid_trials.\n- Symmetrize the Bayesian prior precision via linalg's mat_symmetrize\n  instead of an inline loop, matching the rest of the file.\n\nAll bit-neutral: the golden-trace determinism test pins the driver\nunchanged.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Deduplicate linalg implementations across generic, mat3, mat6, and mat9\n\n- Move the elementwise matrix-op bodies (mul, transpose, vec-mul, add)\n  into T-generic pub(crate) implementations in generic.rs; the f64\n  rectangular publics and the mat6/mat9 Jet-capable wrappers all\n  delegate to them. Public signatures are unchanged (downstream\n  call sites use const-only turbofish, which a leading type parameter\n  would break).\n- mat6_symmetrize / mat9_symmetrize delegate to mat_symmetrize.\n- Share row_inf_norms across the scaled-pivoting solvers: mat6/mat9\n  solve and inv drop their four inlined copies.\n- mat3_inv / mat3_solve compute determinants through mat3_det (the\n  column-replaced Cramer determinants expand to the identical cofactor\n  expressions) and share one scaled-relative singularity guard.\n- Replace the three 1e-14 literals in mat_symmetric_eigen and\n  condition_number with NOLAN_REL_TOL (same value, now one knob).\n\nAll bodies are token-identical rewrites; every result is bit-for-bit\nunchanged.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Deduplicate shared skeletons in angles, grids, differentiate, and statistics\n\n- angles: wrap_pi / wrap_180 share a period-parameterized wrap_centered\n  body, wrap_2pi / wrap_360 share wrap_positive. The full period is\n  reconstructed as 2 * half_period, which is exact in f64, so all four\n  functions are bit-identical to their previous inlined forms.\n- grids: linspace / logspace share the endpoint_grid skeleton; the\n  literal min/max endpoint pushes are preserved in the helper.\n- differentiate: differentiate_dyn delegates its three order arms to\n  differentiate1_vec / differentiate2_vec / differentiate3_vec instead\n  of re-implementing their seed-eval-extract bodies.\n- distributions: hoist the incomplete-gamma convergence parameters\n  (GAMMA_MAX_ITER, GAMMA_EPS) and the e^(-x + a ln x - ln Γ(a))\n  prefactor shared by the series and continued-fraction halves, which\n  must stay in sync for Q(a, x) to be continuous at x = a + 1.\n- multivariate: the unscaled and Merwe scaled sigma-point constructions\n  share symmetric_cholesky_points, differing only in the spread.\n\nAll bit-neutral refactors; no public API changes.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Delegate the permuting jet index functions to their canonical forms\n\nhess_index and tens_index inlined the lower-triangular storage-layout\nformulas that hess_idx and tens_idx already define. The layout contract\nnow has exactly one spelling of each formula.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Correct the AutoDiff trait description in the README\n\nAutoDiff was described as combining all of the listed traits, but it is\nDifferentiableMath + FirstOrder only (Differentiable via supertrait) —\nJet1 implements it, so SecondOrder/ThirdOrder cannot be part of the\nbound. Describe it as the order-agnostic shared surface.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-06-10T21:30:35-07:00",
+          "tree_id": "0fe59c0f403b0754c684630e133dd96334b76a43",
+          "url": "https://github.com/Empyrean-Dynamics/nolan/commit/6f700d89d5fa9d9fa604fb9319316995ada6d1be"
+        },
+        "date": 1781153425802,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "jet1_6_constant",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_constant",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_constant",
+            "value": 59,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_variable",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_variable",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_variable",
+            "value": 57,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_add",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_add",
+            "value": 38,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_add",
+            "value": 182,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul",
+            "value": 66,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul",
+            "value": 380,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_div",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_div",
+            "value": 84,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_div",
+            "value": 408,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul_scalar",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul_scalar",
+            "value": 30,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul_scalar",
+            "value": 121,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sin",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sin",
+            "value": 58,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sin",
+            "value": 294,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_cos",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_cos",
+            "value": 58,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_cos",
+            "value": 309,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sqrt",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sqrt",
+            "value": 48,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sqrt",
+            "value": 244,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_powi_3",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_powi_3",
+            "value": 50,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_powi_3",
+            "value": 268,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_atan2",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_atan2",
+            "value": 106,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_atan2",
+            "value": 682,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_gravity_accel",
+            "value": 46,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_gravity_accel",
+            "value": 289,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_gravity_accel",
+            "value": 2154,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_add",
+            "value": 14,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_add",
+            "value": 76,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_add",
+            "value": 862,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_mul",
+            "value": 14,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_mul",
+            "value": 146,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_mul",
+            "value": 1337,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_sin",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_sin",
+            "value": 111,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_sin",
+            "value": 966,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_gravity_accel",
+            "value": 67,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_gravity_accel",
+            "value": 886,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_gravity_accel",
+            "value": 5671,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_extract_grad",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_extract_grad",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_extract_hess",
+            "value": 45,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_extract_hess",
+            "value": 116,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_extract_tens",
+            "value": 506,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_extract_tens",
+            "value": 1781,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_gravity_magnitude",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate2_6_gravity_magnitude",
+            "value": 227,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate3_6_gravity_magnitude",
+            "value": 1707,
+            "range": "± 22",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_3_gravity_accel",
+            "value": 47,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_first_gravity",
+            "value": 55,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_second_gravity",
+            "value": 282,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_third_gravity",
+            "value": 2627,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_f64",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_f64",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_f64",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_jet1_6",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_jet1_6",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_jet1_6",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_f64",
+            "value": 126,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_f64",
+            "value": 173,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_jet1_6",
+            "value": 872,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_jet1_6",
+            "value": 1297,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_f64",
+            "value": 309,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_f64",
+            "value": 489,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_jet1_9",
+            "value": 3325,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_jet1_9",
+            "value": 5792,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_6_f64",
+            "value": 443,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_9_f64",
+            "value": 1036,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_transpose_2x6",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_2x2x6",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_6x2x6",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_ata_2x6",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_vec_mul_2",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_det_6",
+            "value": 93,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_trace_cube_6",
+            "value": 242,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_frobenius_6x6",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_largest_singular_value_6",
+            "value": 3091,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "condition_number_6",
+            "value": 13571,
+            "range": "± 25",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sym_eigenvalues_3",
+            "value": 71,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_symmetric_eigen_6",
+            "value": 1956,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nearest_psd_6",
+            "value": 2020,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "tikhonov_with_report_6",
+            "value": 12063,
+            "range": "± 29",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sample_statistics_6_n50",
+            "value": 401,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sigma_points_6",
+            "value": 167,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k3",
+            "value": 155,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k5",
+            "value": 193,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linspace_64",
+            "value": 150,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "logspace_64",
+            "value": 497,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linear_clamped_64",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_pi_x64",
+            "value": 427,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_2pi_x64",
+            "value": 389,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_180_x64",
+            "value": 284,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_360_x64",
+            "value": 240,
+            "range": "± 1",
             "unit": "ns/iter"
           }
         ]
