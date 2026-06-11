@@ -87,38 +87,48 @@ pub fn upper_inc_gamma_reg(a: f64, x: f64) -> f64 {
     }
 }
 
+/// Shared convergence parameters for the incomplete-gamma series and
+/// continued-fraction halves. They MUST stay identical between the two:
+/// [`upper_inc_gamma_reg`] switches representation at `x = a + 1`, and
+/// differing tolerances would make `Q(a, x)` discontinuous across that
+/// seam.
+const GAMMA_MAX_ITER: usize = 200;
+const GAMMA_EPS: f64 = 1e-15;
+
+/// The prefactor \\(e^{-x + a \ln x - \ln\Gamma(a)}\\) common to both
+/// incomplete-gamma halves.
+#[inline]
+fn gamma_prefactor(a: f64, x: f64) -> f64 {
+    (-x + a * x.ln() - ln_gamma(a)).exp()
+}
+
 /// Regularized **lower** incomplete gamma `P(a, x) = γ(a, x) / Γ(a)` via
 /// series expansion. Internal — exposed only through
 /// [`upper_inc_gamma_reg`].
 fn lower_gamma_series(a: f64, x: f64) -> f64 {
-    const MAX_ITER: usize = 200;
-    const EPS: f64 = 1e-15;
-
     let mut sum = 1.0 / a;
     let mut term = 1.0 / a;
-    for n in 1..MAX_ITER {
+    for n in 1..GAMMA_MAX_ITER {
         term *= x / (a + n as f64);
         sum += term;
-        if term.abs() < EPS * sum.abs() {
+        if term.abs() < GAMMA_EPS * sum.abs() {
             break;
         }
     }
-    sum * (-x + a * x.ln() - ln_gamma(a)).exp()
+    sum * gamma_prefactor(a, x)
 }
 
 /// Regularized **upper** incomplete gamma `Q(a, x)` via Lentz's
 /// continued-fraction method. Internal — exposed only through
 /// [`upper_inc_gamma_reg`].
 fn upper_gamma_cf(a: f64, x: f64) -> f64 {
-    const MAX_ITER: usize = 200;
-    const EPS: f64 = 1e-15;
     const TINY: f64 = 1e-30;
 
     let mut f = TINY;
     let mut c = TINY;
     let mut d = 0.0_f64;
 
-    for n in 0..MAX_ITER {
+    for n in 0..GAMMA_MAX_ITER {
         let an = if n == 0 {
             1.0
         } else {
@@ -137,12 +147,12 @@ fn upper_gamma_cf(a: f64, x: f64) -> f64 {
         d = 1.0 / d;
         let delta = c * d;
         f *= delta;
-        if (delta - 1.0).abs() < EPS {
+        if (delta - 1.0).abs() < GAMMA_EPS {
             break;
         }
     }
 
-    f * (-x + a * x.ln() - ln_gamma(a)).exp()
+    f * gamma_prefactor(a, x)
 }
 
 /// Chi-squared survival function: `P(X² ≥ x) = 1 - F_χ²(x; k) = Q(k/2, x/2)`.

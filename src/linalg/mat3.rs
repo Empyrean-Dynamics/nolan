@@ -63,20 +63,8 @@ pub fn mat3_transpose_vec_mul<T: Copy + DifferentiableMath>(a: &[[T; 3]; 3], x: 
 /// with `N = 3` instead: scaled partial pivoting halves the worst-case
 /// roundoff at the cost of one extra division per row.
 pub fn mat3_inv<T: Copy + DifferentiableMath>(m: &[[T; 3]; 3]) -> Option<[[T; 3]; 3]> {
-    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-    let mut max_entry = 0.0_f64;
-    for row in m {
-        for v in row {
-            let abs_v = v.value().abs();
-            if abs_v > max_entry {
-                max_entry = abs_v;
-            }
-        }
-    }
-    let scale = max_entry.powi(3).max(f64::MIN_POSITIVE);
-    if det.value().abs() < NOLAN_REL_TOL * scale {
+    let det = mat3_det(m);
+    if det3_is_singular(det, m) {
         return None;
     }
     let d = T::constant(1.0) / det;
@@ -104,11 +92,37 @@ pub fn mat3_inv<T: Copy + DifferentiableMath>(m: &[[T; 3]; 3]) -> Option<[[T; 3]
 /// Returns `None` if the matrix is singular at scaled-relative
 /// tolerance: \\(|\det A| < \text{REL\\_TOL} \cdot \max_{ij}|A_{ij}|^3\\).
 pub fn mat3_solve<T: Copy + DifferentiableMath>(a: &[[T; 3]; 3], b: &[T; 3]) -> Option<[T; 3]> {
-    let det_a = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
-        - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
-        + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+    let det_a = mat3_det(a);
+    if det3_is_singular(det_a, a) {
+        return None;
+    }
+    let inv_det = T::constant(1.0) / det_a;
+
+    // Cramer's rule: x_j = det(A with column j replaced by b) / det(A).
+    // The column-replaced determinants expand to exactly the same
+    // cofactor expressions as the previous hand-inlined forms.
+    let col_replaced = |j: usize| -> [[T; 3]; 3] {
+        let mut m = *a;
+        for (row, &b_i) in m.iter_mut().zip(b.iter()) {
+            row[j] = b_i;
+        }
+        m
+    };
+    let det_x0 = mat3_det(&col_replaced(0));
+    let det_x1 = mat3_det(&col_replaced(1));
+    let det_x2 = mat3_det(&col_replaced(2));
+
+    Some([det_x0 * inv_det, det_x1 * inv_det, det_x2 * inv_det])
+}
+
+/// Scaled-relative singularity guard shared by [`mat3_inv`] and
+/// [`mat3_solve`]: \\(|\det A| < \text{REL\\_TOL} \cdot
+/// (\max_{ij}|A_{ij}|)^3\\). The cubic scale follows from \\(\det A\\)
+/// being a sum of triple products of entries.
+#[inline]
+fn det3_is_singular<T: Copy + DifferentiableMath>(det: T, m: &[[T; 3]; 3]) -> bool {
     let mut max_entry = 0.0_f64;
-    for row in a {
+    for row in m {
         for v in row {
             let abs_v = v.value().abs();
             if abs_v > max_entry {
@@ -117,27 +131,7 @@ pub fn mat3_solve<T: Copy + DifferentiableMath>(a: &[[T; 3]; 3], b: &[T; 3]) -> 
         }
     }
     let scale = max_entry.powi(3).max(f64::MIN_POSITIVE);
-    if det_a.value().abs() < NOLAN_REL_TOL * scale {
-        return None;
-    }
-    let inv_det = T::constant(1.0) / det_a;
-
-    // Replace column 0 with b
-    let det_x0 = b[0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
-        - a[0][1] * (b[1] * a[2][2] - a[1][2] * b[2])
-        + a[0][2] * (b[1] * a[2][1] - a[1][1] * b[2]);
-
-    // Replace column 1 with b
-    let det_x1 = a[0][0] * (b[1] * a[2][2] - a[1][2] * b[2])
-        - b[0] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
-        + a[0][2] * (a[1][0] * b[2] - b[1] * a[2][0]);
-
-    // Replace column 2 with b
-    let det_x2 = a[0][0] * (a[1][1] * b[2] - b[1] * a[2][1])
-        - a[0][1] * (a[1][0] * b[2] - b[1] * a[2][0])
-        + b[0] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
-
-    Some([det_x0 * inv_det, det_x1 * inv_det, det_x2 * inv_det])
+    det.value().abs() < NOLAN_REL_TOL * scale
 }
 
 /// Determinant of a \\(3 \times 3\\) matrix via cofactor expansion.

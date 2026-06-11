@@ -1,77 +1,37 @@
+use crate::linalg::generic::{
+    mat_add_t, mat_mul_t, mat_symmetrize, mat_transpose_t, mat_vec_mul_t, row_inf_norms,
+};
 use crate::linalg::{NOLAN_MIN_SCALE, NOLAN_REL_TOL};
 use crate::traits::DifferentiableMath;
 
 /// Multiply two \\(9 \times 9\\) matrices: \\(C = A \, B\\).
 #[inline]
 pub fn mat9_mul<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9], b: &[[T; 9]; 9]) -> [[T; 9]; 9] {
-    let zero = T::constant(0.0);
-    let mut c = [[zero; 9]; 9];
-    for i in 0..9 {
-        for j in 0..9 {
-            let mut sum = zero;
-            for k in 0..9 {
-                sum = sum + a[i][k] * b[k][j];
-            }
-            c[i][j] = sum;
-        }
-    }
-    c
+    mat_mul_t(a, b)
 }
 
 /// Transpose a \\(9 \times 9\\) matrix: \\(T_{ij} = A_{ji}\\).
 #[inline]
 pub fn mat9_transpose<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9]) -> [[T; 9]; 9] {
-    let zero = T::constant(0.0);
-    let mut t = [[zero; 9]; 9];
-    for i in 0..9 {
-        for j in 0..9 {
-            t[i][j] = a[j][i];
-        }
-    }
-    t
+    mat_transpose_t(a)
 }
 
 /// Multiply a \\(9 \times 9\\) matrix by a 9-vector: \\(\mathbf{y} = A \, \mathbf{x}\\).
 #[inline]
 pub fn mat9_vec_mul<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9], x: &[T; 9]) -> [T; 9] {
-    let zero = T::constant(0.0);
-    let mut y = [zero; 9];
-    for i in 0..9 {
-        let mut sum = zero;
-        for k in 0..9 {
-            sum = sum + a[i][k] * x[k];
-        }
-        y[i] = sum;
-    }
-    y
+    mat_vec_mul_t(a, x)
 }
 
 /// Add two \\(9 \times 9\\) matrices: \\(C = A + B\\).
 #[inline]
 pub fn mat9_add<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9], b: &[[T; 9]; 9]) -> [[T; 9]; 9] {
-    let zero = T::constant(0.0);
-    let mut c = [[zero; 9]; 9];
-    for i in 0..9 {
-        for j in 0..9 {
-            c[i][j] = a[i][j] + b[i][j];
-        }
-    }
-    c
+    mat_add_t(a, b)
 }
 
 /// Symmetrize a \\(9 \times 9\\) matrix: \\(S = \tfrac{1}{2}(A + A^\top)\\).
 #[inline]
 pub fn mat9_symmetrize<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9]) -> [[T; 9]; 9] {
-    let zero = T::constant(0.0);
-    let mut s = [[zero; 9]; 9];
-    for i in 0..9 {
-        for j in i..9 {
-            let avg = (a[i][j] + a[j][i]) * 0.5;
-            s[i][j] = avg;
-            s[j][i] = avg;
-        }
-    }
-    s
+    mat_symmetrize(a)
 }
 
 /// Solve \\(A \mathbf{x} = \mathbf{b}\\) for a \\(9 \times 9\\) system via Gauss–Jordan
@@ -82,16 +42,7 @@ pub fn mat9_symmetrize<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9]) -> [[T; 9]
 #[allow(clippy::needless_range_loop)]
 pub fn mat9_solve<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9], b: &[T; 9]) -> Option<[T; 9]> {
     let zero = T::constant(0.0);
-    let mut s: [f64; 9] = std::array::from_fn(|i| {
-        let mut max = 0.0_f64;
-        for j in 0..9 {
-            let v = a[i][j].value().abs();
-            if v > max {
-                max = v;
-            }
-        }
-        max
-    });
+    let mut s = row_inf_norms(a);
     if s.iter().all(|x| *x < NOLAN_MIN_SCALE) {
         return None;
     }
@@ -159,16 +110,7 @@ pub fn mat9_solve<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9], b: &[T; 9]) -> 
 pub fn mat9_inv<T: Copy + DifferentiableMath>(a: &[[T; 9]; 9]) -> Option<[[T; 9]; 9]> {
     let zero = T::constant(0.0);
     let one = T::constant(1.0);
-    let mut s: [f64; 9] = std::array::from_fn(|i| {
-        let mut max = 0.0_f64;
-        for j in 0..9 {
-            let v = a[i][j].value().abs();
-            if v > max {
-                max = v;
-            }
-        }
-        max
-    });
+    let mut s = row_inf_norms(a);
     if s.iter().all(|x| *x < NOLAN_MIN_SCALE) {
         return None;
     }

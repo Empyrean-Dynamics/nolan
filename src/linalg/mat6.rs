@@ -1,77 +1,37 @@
+use crate::linalg::generic::{
+    mat_add_t, mat_mul_t, mat_symmetrize, mat_transpose_t, mat_vec_mul_t, row_inf_norms,
+};
 use crate::linalg::{NOLAN_MIN_SCALE, NOLAN_REL_TOL};
 use crate::traits::DifferentiableMath;
 
 /// Multiply two \\(6 \times 6\\) matrices: \\(C = A \, B\\).
 #[inline]
 pub fn mat6_mul<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6], b: &[[T; 6]; 6]) -> [[T; 6]; 6] {
-    let zero = T::constant(0.0);
-    let mut c = [[zero; 6]; 6];
-    for i in 0..6 {
-        for j in 0..6 {
-            let mut sum = zero;
-            for k in 0..6 {
-                sum = sum + a[i][k] * b[k][j];
-            }
-            c[i][j] = sum;
-        }
-    }
-    c
+    mat_mul_t(a, b)
 }
 
 /// Transpose a \\(6 \times 6\\) matrix: \\(T_{ij} = A_{ji}\\).
 #[inline]
 pub fn mat6_transpose<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6]) -> [[T; 6]; 6] {
-    let zero = T::constant(0.0);
-    let mut t = [[zero; 6]; 6];
-    for i in 0..6 {
-        for j in 0..6 {
-            t[i][j] = a[j][i];
-        }
-    }
-    t
+    mat_transpose_t(a)
 }
 
 /// Multiply a \\(6 \times 6\\) matrix by a 6-vector: \\(\mathbf{y} = A \, \mathbf{x}\\).
 #[inline]
 pub fn mat6_vec_mul<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6], x: &[T; 6]) -> [T; 6] {
-    let zero = T::constant(0.0);
-    let mut y = [zero; 6];
-    for i in 0..6 {
-        let mut sum = zero;
-        for k in 0..6 {
-            sum = sum + a[i][k] * x[k];
-        }
-        y[i] = sum;
-    }
-    y
+    mat_vec_mul_t(a, x)
 }
 
 /// Add two \\(6 \times 6\\) matrices: \\(C = A + B\\).
 #[inline]
 pub fn mat6_add<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6], b: &[[T; 6]; 6]) -> [[T; 6]; 6] {
-    let zero = T::constant(0.0);
-    let mut c = [[zero; 6]; 6];
-    for i in 0..6 {
-        for j in 0..6 {
-            c[i][j] = a[i][j] + b[i][j];
-        }
-    }
-    c
+    mat_add_t(a, b)
 }
 
 /// Symmetrize a \\(6 \times 6\\) matrix: \\(S = \tfrac{1}{2}(A + A^\top)\\).
 #[inline]
 pub fn mat6_symmetrize<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6]) -> [[T; 6]; 6] {
-    let zero = T::constant(0.0);
-    let mut s = [[zero; 6]; 6];
-    for i in 0..6 {
-        for j in i..6 {
-            let avg = (a[i][j] + a[j][i]) * 0.5;
-            s[i][j] = avg;
-            s[j][i] = avg;
-        }
-    }
-    s
+    mat_symmetrize(a)
 }
 
 /// Solve \\(A \mathbf{x} = \mathbf{b}\\) for a \\(6 \times 6\\) system via Gauss–Jordan
@@ -82,16 +42,7 @@ pub fn mat6_symmetrize<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6]) -> [[T; 6]
 #[allow(clippy::needless_range_loop)]
 pub fn mat6_solve<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6], b: &[T; 6]) -> Option<[T; 6]> {
     let zero = T::constant(0.0);
-    let mut s: [f64; 6] = std::array::from_fn(|i| {
-        let mut max = 0.0_f64;
-        for j in 0..6 {
-            let v = a[i][j].value().abs();
-            if v > max {
-                max = v;
-            }
-        }
-        max
-    });
+    let mut s = row_inf_norms(a);
     if s.iter().all(|x| *x < NOLAN_MIN_SCALE) {
         return None;
     }
@@ -160,16 +111,7 @@ pub fn mat6_solve<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6], b: &[T; 6]) -> 
 pub fn mat6_inv<T: Copy + DifferentiableMath>(a: &[[T; 6]; 6]) -> Option<[[T; 6]; 6]> {
     let zero = T::constant(0.0);
     let one = T::constant(1.0);
-    let mut s: [f64; 6] = std::array::from_fn(|i| {
-        let mut max = 0.0_f64;
-        for j in 0..6 {
-            let v = a[i][j].value().abs();
-            if v > max {
-                max = v;
-            }
-        }
-        max
-    });
+    let mut s = row_inf_norms(a);
     if s.iter().all(|x| *x < NOLAN_MIN_SCALE) {
         return None;
     }

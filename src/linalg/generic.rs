@@ -2,10 +2,13 @@ use crate::linalg::{NOLAN_MIN_SCALE, NOLAN_REL_TOL};
 use crate::traits::DifferentiableMath;
 
 /// Row-infinity norms of an \\(N \times N\\) matrix, taking `.value()` to
-/// drop Jet partials before comparison.
+/// drop Jet partials before comparison. Shared by the scaled-pivoting
+/// solvers here and in `mat6` / `mat9`.
 #[inline]
 #[allow(clippy::needless_range_loop)]
-fn row_inf_norms<T: Copy + DifferentiableMath, const N: usize>(a: &[[T; N]; N]) -> [f64; N] {
+pub(crate) fn row_inf_norms<T: Copy + DifferentiableMath, const N: usize>(
+    a: &[[T; N]; N],
+) -> [f64; N] {
     std::array::from_fn(|i| {
         let mut max = 0.0_f64;
         for j in 0..N {
@@ -302,15 +305,8 @@ pub fn vec_norm<const N: usize>(x: &[f64; N]) -> f64 {
 
 /// Matrix-vector product \\(\mathbf{y} = A\mathbf{x}\\) for \\(N \times N\\) matrices.
 #[inline]
-#[allow(clippy::needless_range_loop)]
 pub fn mat_vec_mul<const N: usize>(a: &[[f64; N]; N], x: &[f64; N]) -> [f64; N] {
-    let mut y = [0.0; N];
-    for i in 0..N {
-        for j in 0..N {
-            y[i] += a[i][j] * x[j];
-        }
-    }
-    y
+    mat_vec_mul_t(a, x)
 }
 
 /// Squared Mahalanobis distance:
@@ -484,7 +480,8 @@ pub fn mat_symmetric_eigen<const N: usize>(a: &[[f64; N]; N]) -> Option<([f64; N
     // where the spectrum spans many orders of magnitude.
     const MAX_SWEEPS: usize = 64;
     // Stop when sum of squared off-diagonals < REL_TOL² × ‖A‖_F².
-    const REL_TOL: f64 = 1e-14;
+    // The crate-wide relative tolerance, not a local retune.
+    const REL_TOL: f64 = NOLAN_REL_TOL;
     let tol_off2 = REL_TOL * REL_TOL * frob2_total.max(f64::MIN_POSITIVE);
     for _ in 0..MAX_SWEEPS {
         let mut off = 0.0_f64;
@@ -686,21 +683,33 @@ pub fn mat_largest_singular_value<const N: usize>(
 }
 
 // ── Phase 1E additions: rectangular mat_mul, transpose, AᵀA ─────────
+//
+// The public rectangular functions keep their original `f64`-only
+// signatures (downstream call sites use const-only turbofish, e.g.
+// `mat_mul::<2, N, N>`, which a leading type parameter would break);
+// the bodies live in `T`-generic `pub(crate)` implementations shared
+// with the `mat6` / `mat9` Jet-capable wrappers.
 
-/// Rectangular matrix multiplication: \\(C = A B\\) where
-/// \\(A\\) is \\(M \times K\\), \\(B\\) is \\(K \times N\\),
-/// \\(C\\) is \\(M \times N\\).
+/// `T`-generic body of [`mat_mul`]: \\(C = A B\\) with the fixed
+/// row-major accumulation order shared by every caller.
+#[inline]
 #[allow(clippy::needless_range_loop)]
-pub fn mat_mul<const M: usize, const K: usize, const N: usize>(
-    a: &[[f64; K]; M],
-    b: &[[f64; N]; K],
-) -> [[f64; N]; M] {
-    let mut c = [[0.0_f64; N]; M];
+pub(crate) fn mat_mul_t<
+    T: Copy + DifferentiableMath,
+    const M: usize,
+    const K: usize,
+    const N: usize,
+>(
+    a: &[[T; K]; M],
+    b: &[[T; N]; K],
+) -> [[T; N]; M] {
+    let zero = T::constant(0.0);
+    let mut c = [[zero; N]; M];
     for i in 0..M {
         for j in 0..N {
-            let mut s = 0.0;
+            let mut s = zero;
             for k in 0..K {
-                s += a[i][k] * b[k][j];
+                s = s + a[i][k] * b[k][j];
             }
             c[i][j] = s;
         }
@@ -708,17 +717,71 @@ pub fn mat_mul<const M: usize, const K: usize, const N: usize>(
     c
 }
 
-/// Transpose of an \\(M \times N\\) matrix: returns \\(A^\top\\) of shape
-/// \\(N \times M\\).
+/// `T`-generic body of [`mat_transpose`].
+#[inline]
 #[allow(clippy::needless_range_loop)]
-pub fn mat_transpose<const M: usize, const N: usize>(a: &[[f64; N]; M]) -> [[f64; M]; N] {
-    let mut t = [[0.0_f64; M]; N];
+pub(crate) fn mat_transpose_t<T: Copy + DifferentiableMath, const M: usize, const N: usize>(
+    a: &[[T; N]; M],
+) -> [[T; M]; N] {
+    let zero = T::constant(0.0);
+    let mut t = [[zero; M]; N];
     for i in 0..M {
         for j in 0..N {
             t[j][i] = a[i][j];
         }
     }
     t
+}
+
+/// `T`-generic body of [`mat_vec_mul`]: \\(\mathbf{y} = A\mathbf{x}\\).
+#[inline]
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn mat_vec_mul_t<T: Copy + DifferentiableMath, const N: usize>(
+    a: &[[T; N]; N],
+    x: &[T; N],
+) -> [T; N] {
+    let zero = T::constant(0.0);
+    let mut y = [zero; N];
+    for i in 0..N {
+        for j in 0..N {
+            y[i] = y[i] + a[i][j] * x[j];
+        }
+    }
+    y
+}
+
+/// `T`-generic elementwise matrix sum \\(C = A + B\\), shared by the
+/// `mat6` / `mat9` wrappers.
+#[inline]
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn mat_add_t<T: Copy + DifferentiableMath, const N: usize>(
+    a: &[[T; N]; N],
+    b: &[[T; N]; N],
+) -> [[T; N]; N] {
+    let zero = T::constant(0.0);
+    let mut c = [[zero; N]; N];
+    for i in 0..N {
+        for j in 0..N {
+            c[i][j] = a[i][j] + b[i][j];
+        }
+    }
+    c
+}
+
+/// Rectangular matrix multiplication: \\(C = A B\\) where
+/// \\(A\\) is \\(M \times K\\), \\(B\\) is \\(K \times N\\),
+/// \\(C\\) is \\(M \times N\\).
+pub fn mat_mul<const M: usize, const K: usize, const N: usize>(
+    a: &[[f64; K]; M],
+    b: &[[f64; N]; K],
+) -> [[f64; N]; M] {
+    mat_mul_t(a, b)
+}
+
+/// Transpose of an \\(M \times N\\) matrix: returns \\(A^\top\\) of shape
+/// \\(N \times M\\).
+pub fn mat_transpose<const M: usize, const N: usize>(a: &[[f64; N]; M]) -> [[f64; M]; N] {
+    mat_transpose_t(a)
 }
 
 /// Symmetric product \\(A^\top A\\) for an \\(M \times N\\) matrix.
@@ -769,7 +832,7 @@ const CONDITION_NUMBER_MAX_ITER: usize = 500;
 #[allow(clippy::needless_range_loop)]
 pub fn condition_number<const N: usize>(a: &[[f64; N]; N]) -> f64 {
     let ata = mat_ata::<N, N>(a);
-    let (v_max, lambda_max) = mat_eigenvector_max(&ata, CONDITION_NUMBER_MAX_ITER, 1e-14);
+    let (v_max, lambda_max) = mat_eigenvector_max(&ata, CONDITION_NUMBER_MAX_ITER, NOLAN_REL_TOL);
     if lambda_max <= 0.0 {
         return f64::INFINITY;
     }
@@ -852,7 +915,7 @@ pub fn condition_number<const N: usize>(a: &[[f64; N]; N]) -> f64 {
         for i in 0..N {
             x[i] = y[i] * inv_y_norm;
         }
-        if (new_lambda_inv - lambda_inv).abs() < 1e-14 * new_lambda_inv.abs() {
+        if (new_lambda_inv - lambda_inv).abs() < NOLAN_REL_TOL * new_lambda_inv.abs() {
             lambda_inv = new_lambda_inv;
             converged = true;
             break;
