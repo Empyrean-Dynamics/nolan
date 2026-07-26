@@ -286,13 +286,45 @@ pub trait CostProblem<const N: usize> {
     /// evaluation at \\(\mathbf{x}_0\\) and then after each full
     /// evaluation at an accepted point has succeeded, so committed
     /// state always corresponds to a retained iterate — including on
-    /// zero-acceptance exits.
+    /// zero-acceptance exits. Also called after the re-assembly a
+    /// [`refresh_model`](Self::refresh_model) declaration triggers,
+    /// which lands on the CURRENT accepted point rather than a new one.
     fn on_step_accepted(&mut self, _x: &[f64; N]) {}
 
     /// Discard hook: drop pending (staged) state from a rejected trial
     /// evaluation. Diagnostics and counters only — nothing committed
     /// needs rolling back.
     fn on_step_rejected(&mut self, _x_trial: &[f64; N]) {}
+
+    /// Model-refresh hook for problems that evaluate an **inexact**
+    /// model — a surrogate anchored at a reference point, a cached
+    /// linearization, a reduced-fidelity dynamics. Called once per
+    /// outer iteration at the current accepted point, after that
+    /// iteration's convergence tests and before its first trial.
+    ///
+    /// This is the ONLY point at which such a problem may change the
+    /// model its evaluations describe. Within one iteration
+    /// \\(\Phi(\mathbf{x})\\), \\(A\\), \\(\mathbf{g}\\) and every
+    /// trial \\(\Phi(\mathbf{x}+\mathbf{h})\\) — including the ones
+    /// spent escalating \\(\mu\\) — must come from ONE objective, or
+    /// the gain ratio measures the difference between two different
+    /// functions and \\(A\\) is not the Gauss-Newton Hessian of the
+    /// cost being compared. Switching models *between* iterations is
+    /// ordinary inexact-model refresh and is fully supported here.
+    ///
+    /// Return `true` to declare that the model just changed. The
+    /// driver then re-assembles at `x` under the new model, commits
+    /// the result via [`on_step_accepted`](Self::on_step_accepted),
+    /// and only then enters the trial loop — so the system it damps
+    /// and the trials it compares against are the same objective
+    /// again. Note that the objective's *value* may jump across a
+    /// refresh: cost monotonicity holds per model, not across one.
+    ///
+    /// Return `false` (the default) to keep the current system; no
+    /// evaluation is spent.
+    fn refresh_model(&mut self, _x: &[f64; N]) -> bool {
+        false
+    }
 
     /// Directional second derivative of the pre-weighted residuals
     /// along `v` at `x`:
@@ -409,7 +441,9 @@ pub enum CovarianceFailure {
 #[derive(Clone, Debug)]
 pub struct LMSolution<const N: usize> {
     /// The retained iterate (best visited: cost is monotone
-    /// non-increasing across accepted steps).
+    /// non-increasing across accepted steps *of one model* — a
+    /// [`refresh_model`](CostProblem::refresh_model) declaration
+    /// re-measures the objective, so `cost` may rise across a refresh).
     pub x: [f64; N],
     /// \\((A_{\text{final}})^{-1}\\) at the returned `x`
     /// (data + driver prior). Inversion failure is carried explicitly —
@@ -423,8 +457,27 @@ pub struct LMSolution<const N: usize> {
     pub data_cost: f64,
     /// Quadratic form \\(\mathbf{h}^\top A\,\mathbf{h}\\) of the last
     /// **accepted** step under the undamped, prior-augmented \\(A\\)
-    /// that produced it. `None` if no step was accepted.
+    /// that produced it — which, after a
+    /// [`refresh_model`](CostProblem::refresh_model), is not the
+    /// \\(A\\) of the returned system. `None` only when no step was
+    /// ever accepted; a refresh does NOT reset it, so `None` always
+    /// means what it says.
+    ///
+    /// A DIAGNOSTIC, not a convergence metric: the accepted step is
+    /// μ-damped and possibly clamped, so it is not the quantity any
+    /// termination test is decided on and is not comparable to
+    /// `qtol`/`xtol`/`ftol` in either direction. Quote
+    /// [`final_gn_qnorm`](Self::final_gn_qnorm) when reporting against
+    /// a tolerance.
     pub accepted_step_qnorm: Option<f64>,
+    /// Quadratic form \\(\mathbf{h}_{\text{GN}}^\top
+    /// A\,\mathbf{h}_{\text{GN}}\\) of the **undamped** Gauss-Newton
+    /// step at the returned `x` — the quantity the
+    /// [`qtol`](LMConfig::qtol) step-convergence test is decided on,
+    /// and therefore the only step norm comparable to that tolerance.
+    /// `None` when the undamped system is singular at the returned
+    /// point, where the test is skipped as well.
+    pub final_gn_qnorm: Option<f64>,
     /// \\(\max_j |g_j| / d_j\\) at the returned `x` (diagnostic; the
     /// gradient *test* additionally normalizes by \\(\sqrt{\Phi}\\)).
     pub gradient_norm_scaled: f64,
@@ -658,8 +711,25 @@ pub enum LMError<E> {
         /// The domain error.
         source: E,
     },
-    /// Non-finite value in the **initial** full evaluation (later
-    /// non-finite full evaluations roll the acceptance back instead).
+    /// The re-assembly that a
+    /// [`refresh_model`](CostProblem::refresh_model) declaration
+    /// requires failed at the accepted point. There is no retreat: the
+    /// problem has already moved to the new model, so the system the
+    /// driver still holds describes an objective the problem no longer
+    /// evaluates.
+    ModelRefreshFailed {
+        /// Outer iteration whose refresh failed.
+        iteration: usize,
+        /// The domain error.
+        source: E,
+    },
+    /// Non-finite value in a full evaluation the driver cannot retreat
+    /// from: the **initial** one, or the re-assembly a
+    /// [`refresh_model`](CostProblem::refresh_model) declaration
+    /// requires (there the problem has already switched models, so
+    /// there is no earlier system left to fall back to). A non-finite
+    /// TRIAL evaluation rolls the acceptance back instead of surfacing
+    /// here.
     InvalidEvaluation {
         /// Outer iteration (0 = initial evaluation).
         iteration: usize,
@@ -717,6 +787,10 @@ impl<E: std::fmt::Display> std::fmt::Display for LMError<E> {
             Self::InitialEvaluationFailed { source } => {
                 write!(f, "initial evaluation failed: {source}")
             }
+            Self::ModelRefreshFailed { iteration, source } => write!(
+                f,
+                "re-assembly after a model refresh failed at iteration {iteration}: {source}"
+            ),
             Self::InvalidEvaluation { iteration, defect } => {
                 write!(f, "invalid evaluation at iteration {iteration}: {defect:?}")
             }
@@ -738,6 +812,7 @@ impl<E: std::error::Error + 'static> std::error::Error for LMError<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InitialEvaluationFailed { source } => Some(source),
+            Self::ModelRefreshFailed { source, .. } => Some(source),
             Self::PersistentInvalidTrials {
                 last_source: Some(source),
                 ..
@@ -818,6 +893,7 @@ trait SystemSource<const N: usize> {
     fn constrain(&mut self, x: &[f64; N], delta: &mut [f64; N]);
     fn accepted(&mut self, x: &[f64; N]);
     fn rejected(&mut self, x_trial: &[f64; N]);
+    fn refresh_model(&mut self, x: &[f64; N]) -> bool;
     fn second_directional_derivative(&mut self, x: &[f64; N], v: &[f64; N]) -> Option<Vec<f64>>;
 }
 
@@ -957,6 +1033,10 @@ impl<'a, P: ResidualProblem<N>, const N: usize> SystemSource<N> for ResidualSour
         self.problem.on_step_rejected(x_trial);
     }
 
+    fn refresh_model(&mut self, x: &[f64; N]) -> bool {
+        self.problem.refresh_model(x)
+    }
+
     fn second_directional_derivative(&mut self, x: &[f64; N], v: &[f64; N]) -> Option<Vec<f64>> {
         self.problem.second_directional_derivative(x, v)
     }
@@ -1036,6 +1116,10 @@ impl<'a, P: SystemProblem<N>, const N: usize> SystemSource<N> for DirectSource<'
 
     fn rejected(&mut self, x_trial: &[f64; N]) {
         self.problem.on_step_rejected(x_trial);
+    }
+
+    fn refresh_model(&mut self, x: &[f64; N]) -> bool {
+        self.problem.refresh_model(x)
     }
 
     fn second_directional_derivative(&mut self, x: &[f64; N], v: &[f64; N]) -> Option<Vec<f64>> {
@@ -1461,10 +1545,15 @@ fn persistent_invalid_trials<E, const N: usize>(
 // ── Driver core ─────────────────────────────────────────────────────
 
 /// Bookkeeping for the most recent accepted step, consumed by the
-/// convergence tests at the next outer iteration.
+/// **cost** convergence test at the next outer iteration.
+///
+/// Everything here is a cross-model quantity — it only means anything
+/// against the system it was measured on — which is why a
+/// [`CostProblem::refresh_model`] declaration clears the whole record.
+/// The step's own SIZE is not stored here for exactly that reason: it
+/// stays true across a refresh, and is tracked separately so that
+/// clearing this does not erase the fact that a step was accepted.
 struct AcceptedStep {
-    /// hᵀAh under the (augmented, undamped) A that produced the step.
-    qnorm: f64,
     /// Whether `constrain_step` modified the step (a clamped step can
     /// never declare convergence).
     clamped: bool,
@@ -1474,6 +1563,101 @@ struct AcceptedStep {
     pred: f64,
     /// Actual reduction measured between full evaluations.
     actred: f64,
+}
+
+/// The convergence battery at an accepted point, returning the reason
+/// that fired (all of which mean `converged = true`) or `None` to keep
+/// iterating.
+///
+/// Factored out because it runs from TWO places — once per outer
+/// iteration on the system the driver has been minimizing, and again
+/// immediately after a [`CostProblem::refresh_model`] re-assembly,
+/// which produces a different objective at the same point. Keeping one
+/// implementation is what stops the two call sites from drifting into
+/// different notions of "converged".
+///
+/// `last_accepted` gates the cost test only: pass `None` whenever the
+/// last accepted step was measured against a DIFFERENT system than
+/// `sys` (i.e. after a refresh), because `actred`/`pred` are then
+/// cross-model quantities and comparing them is exactly what the
+/// refresh exists to prevent. The gradient and step tests read only
+/// `sys`, `d` and `x`, so they are always meaningful.
+fn convergence_reason<const N: usize>(
+    config: &LMConfig,
+    x: &[f64; N],
+    sys: &AssembledSystem<N>,
+    d: &[f64; N],
+    d_max: f64,
+    last_accepted: Option<&AcceptedStep>,
+) -> Option<TerminationReason> {
+    // Gradient (MINPACK cosine form, multiplicative to avoid
+    // division): |g_j| ≤ gtol · √A_jj · √Φ for all j, using the
+    // CURRENT column norms (MINPACK semantics — the running-max d
+    // would loosen the test on collapsed-sensitivity columns). At
+    // an exact fit (Φ = 0) the gradient is exactly zero and the
+    // test passes; a zero column forces g_j = 0, which also
+    // passes. Cost is validated ≥ 0 at assembly, and the
+    // is_finite guard makes a NaN threshold unreachable as a
+    // matter of defense in depth — a NaN must never read as
+    // "pass".
+    if config.gtol > 0.0 {
+        let sqrt_cost = sys.cost.sqrt();
+        let mut pass = sqrt_cost.is_finite();
+        for j in 0..N {
+            if sys.rhs[j].abs() > config.gtol * sys.normal[j][j].sqrt() * sqrt_cost {
+                pass = false;
+                break;
+            }
+        }
+        if pass {
+            return Some(TerminationReason::GradientTolerance);
+        }
+    }
+
+    // Step- and cost-based convergence are judged against the
+    // UNDAMPED Gauss-Newton step at the accepted point. A step
+    // that is tiny only because μ crushed it says nothing about
+    // stationarity: on stiff valleys the rejections inflate μ by
+    // orders of magnitude, and any μ-shrunken accepted step would
+    // read as "converged" at an arbitrarily bad iterate (observed
+    // on the 2020 CD3 capture-spanning fit at χ² ~ 1e12). The
+    // undamped step is also what the legacy solver's step test
+    // effectively measured (λ ≈ 1e-6 at convergence).
+    //
+    // A singular undamped system simply skips these tests — the
+    // gradient and budget criteria still terminate.
+    let h_gn = solve_damped(&sys.normal, &sys.rhs, d, d_max, 0.0)?;
+    let q_gn = quadratic_form(&h_gn, &sys.normal);
+    let q_pass = config.qtol > 0.0 && q_gn <= config.qtol;
+    let x_pass = config.xtol > 0.0
+        && scaled_norm(&h_gn, d) <= config.xtol * (scaled_norm(x, d) + config.xtol);
+    if q_pass || x_pass {
+        return Some(TerminationReason::StepTolerance);
+    }
+
+    // Cost tolerance (MINPACK info=1 analogue): the actual AND
+    // predicted reduction of the last accepted (unclamped)
+    // step both ≤ ftol·Φ_prev with a consistent model
+    // (ρ ≤ 2) — AND the undamped step's own predicted gain is
+    // below the same threshold, so a μ-starved step cannot
+    // manufacture a plateau (for the exact GN step the
+    // predicted reduction is \(\mathbf{h}^T \mathbf{g}\),
+    // but the general form is used for uniformity).
+    if let Some(acc) = last_accepted
+        && !acc.clamped
+        && config.ftol > 0.0
+        && acc.prev_cost > 0.0
+    {
+        let threshold = config.ftol * acc.prev_cost;
+        let ratio_ok = acc.pred > 0.0 && acc.actred <= 2.0 * acc.pred;
+        let gn_exhausted =
+            predicted_reduction(&h_gn, &sys.normal, &sys.rhs) <= config.ftol * sys.cost;
+        if acc.actred.abs() <= threshold && acc.pred <= threshold && ratio_ok && gn_exhausted {
+            return Some(TerminationReason::CostTolerance);
+        }
+    }
+
+    None
 }
 
 fn solve_core<S: SystemSource<N>, const N: usize>(
@@ -1534,6 +1718,9 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
     let mut nu = 2.0_f64;
 
     let mut last_accepted: Option<AcceptedStep> = None;
+    // Survives a model refresh; `last_accepted` does not (see the
+    // acceptance block).
+    let mut last_accepted_qnorm: Option<f64> = None;
     let mut consecutive_invalid = 0usize;
     let mut last_invalid_source: Option<S::Error> = None;
 
@@ -1550,81 +1737,83 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
         iterations = iteration;
 
         // ── Convergence tests at the accepted point ──
-        // Gradient (MINPACK cosine form, multiplicative to avoid
-        // division): |g_j| ≤ gtol · √A_jj · √Φ for all j, using the
-        // CURRENT column norms (MINPACK semantics — the running-max d
-        // would loosen the test on collapsed-sensitivity columns). At
-        // an exact fit (Φ = 0) the gradient is exactly zero and the
-        // test passes; a zero column forces g_j = 0, which also
-        // passes. Cost is validated ≥ 0 at assembly, and the
-        // is_finite guard makes a NaN threshold unreachable as a
-        // matter of defense in depth — a NaN must never read as
-        // "pass".
-        if config.gtol > 0.0 {
-            let sqrt_cost = sys.cost.sqrt();
-            let mut pass = sqrt_cost.is_finite();
-            for j in 0..N {
-                if sys.rhs[j].abs() > config.gtol * sys.normal[j][j].sqrt() * sqrt_cost {
-                    pass = false;
-                    break;
-                }
-            }
-            if pass {
-                converged = true;
-                reason = TerminationReason::GradientTolerance;
-                break 'outer;
-            }
+        // Judged on the system the driver has been minimizing, with
+        // the last accepted step's reductions available to the cost
+        // test (they were measured against this same system).
+        if let Some(r) = convergence_reason(config, &x, &sys, &d, d_max, last_accepted.as_ref()) {
+            converged = true;
+            reason = r;
+            break 'outer;
         }
 
-        // Step- and cost-based convergence are judged against the
-        // UNDAMPED Gauss-Newton step at the accepted point. A step
-        // that is tiny only because μ crushed it says nothing about
-        // stationarity: on stiff valleys the rejections inflate μ by
-        // orders of magnitude, and any μ-shrunken accepted step would
-        // read as "converged" at an arbitrarily bad iterate (observed
-        // on the 2020 CD3 capture-spanning fit at χ² ~ 1e12). The
-        // undamped step is also what the legacy solver's step test
-        // effectively measured (λ ≈ 1e-6 at convergence).
-        //
-        // A singular undamped system simply skips these tests — the
-        // gradient and budget criteria still terminate.
-        if let Some(h_gn) = solve_damped(&sys.normal, &sys.rhs, &d, d_max, 0.0) {
-            let q_gn = quadratic_form(&h_gn, &sys.normal);
-            let q_pass = config.qtol > 0.0 && q_gn <= config.qtol;
-            let x_pass = config.xtol > 0.0
-                && scaled_norm(&h_gn, &d) <= config.xtol * (scaled_norm(&x, &d) + config.xtol);
-            if q_pass || x_pass {
-                converged = true;
-                reason = TerminationReason::StepTolerance;
-                break 'outer;
-            }
-
-            // Cost tolerance (MINPACK info=1 analogue): the actual AND
-            // predicted reduction of the last accepted (unclamped)
-            // step both ≤ ftol·Φ_prev with a consistent model
-            // (ρ ≤ 2) — AND the undamped step's own predicted gain is
-            // below the same threshold, so a μ-starved step cannot
-            // manufacture a plateau (for the exact GN step the
-            // predicted reduction is \(\mathbf{h}^T \mathbf{g}\),
-            // but the general form is used for uniformity).
-            if let Some(acc) = &last_accepted
-                && !acc.clamped
-                && config.ftol > 0.0
-                && acc.prev_cost > 0.0
-            {
-                let threshold = config.ftol * acc.prev_cost;
-                let ratio_ok = acc.pred > 0.0 && acc.actred <= 2.0 * acc.pred;
-                let gn_exhausted =
-                    predicted_reduction(&h_gn, &sys.normal, &sys.rhs) <= config.ftol * sys.cost;
-                if acc.actred.abs() <= threshold
-                    && acc.pred <= threshold
-                    && ratio_ok
-                    && gn_exhausted
-                {
-                    converged = true;
-                    reason = TerminationReason::CostTolerance;
-                    break 'outer;
+        // ── Model refresh (inexact-model problems) ──
+        // A problem that evaluates a surrogate / cached linearization
+        // may move its anchor HERE and nowhere else. The switch is
+        // only sound together with a re-assembly: Φ(x), A, g and every
+        // trial Φ(x + h) of the iteration below must describe ONE
+        // objective, or ρ compares two different functions and A stops
+        // being the Gauss-Newton Hessian of the compared cost. Placed
+        // after the convergence tests deliberately — the tests judge
+        // the objective the driver was actually minimizing, and a
+        // solve that terminates here spends no refresh evaluation.
+        if source.refresh_model(&x) {
+            sys = match source.assemble(&x) {
+                Ok(s) => s,
+                // No retreat: the problem has already switched models,
+                // so `sys` describes an objective it no longer
+                // evaluates. Surface it rather than damping a stale
+                // system.
+                Err(AssembleFailure::Domain(e)) => {
+                    return Err(LMError::ModelRefreshFailed {
+                        iteration,
+                        source: e,
+                    });
                 }
+                Err(AssembleFailure::NonFinite(defect)) => {
+                    return Err(LMError::InvalidEvaluation { iteration, defect });
+                }
+                Err(AssembleFailure::SystemNonFinite(defect)) => {
+                    return Err(LMError::InvalidSystem { iteration, defect });
+                }
+                Err(AssembleFailure::Hard(h)) => return Err(h.into_error(iteration)),
+            };
+            d_max = update_scaling(&mut d, &sys.normal);
+            if d_max == 0.0 {
+                return Err(LMError::ZeroDampingDiagonal { iteration });
+            }
+            // The refreshed evaluation is the committed one at x.
+            source.accepted(&x);
+            // The last accepted step's reductions were measured on the
+            // previous model; comparing them against this one is
+            // exactly the cross-model comparison the refresh exists to
+            // prevent, so the cost test restarts.
+            last_accepted = None;
+
+            // The battery above judged the model the problem just
+            // replaced. The new one is a different objective at the
+            // same point and may already be stationary there — a
+            // surrogate refreshing onto the full model at a converged
+            // iterate is precisely that case. Re-test BEFORE spending a
+            // trial: otherwise the driver damps its way to
+            // DampingExhausted / InnerTrialsExhausted and reports
+            // failure at a point whose undamped Gauss-Newton step is
+            // below `qtol`.
+            //
+            // Which tests re-run, and why: `last_accepted` was just
+            // cleared, so the cost test is skipped BY CONSTRUCTION —
+            // its actred/pred belong to the previous model and are not
+            // comparable to this one. The step test (`qtol`/`xtol` on
+            // the undamped Gauss-Newton step) and the MINPACK
+            // gradient test read only the freshly assembled system, so
+            // both are meaningful the instant the re-assembly lands.
+            // The accepted DAMPED step is deliberately not a
+            // convergence criterion anywhere — see the gain-ratio
+            // design note; a μ-crushed step says nothing about
+            // stationarity under either model.
+            if let Some(r) = convergence_reason(config, &x, &sys, &d, d_max, None) {
+                converged = true;
+                reason = r;
+                break 'outer;
             }
         }
 
@@ -1816,8 +2005,17 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
 
                     source.accepted(&x_trial);
 
+                    // Tracked outside `last_accepted` because that
+                    // record is CLEARED by a model refresh (its
+                    // actred/pred stop being comparable across one),
+                    // while "how big was the last step actually taken"
+                    // remains true. Clearing both would make a solve
+                    // that accepted many steps and then refreshed
+                    // report `None` — i.e. "no step was accepted",
+                    // which callers read as "the start point was
+                    // already stationary".
+                    last_accepted_qnorm = Some(quadratic_form(&h, &sys.normal));
                     last_accepted = Some(AcceptedStep {
-                        qnorm: quadratic_form(&h, &sys.normal),
                         clamped,
                         prev_cost: sys.cost,
                         pred,
@@ -1893,12 +2091,21 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
         m
     };
 
+    // The quantity `qtol` is tested on, evaluated at the RETURNED
+    // point: the undamped Gauss-Newton step's quadratic form. Reported
+    // on every exit path so a non-converged solve can be described in
+    // terms of the test it failed, instead of the μ-damped accepted
+    // step (which is comparable to nothing).
+    let final_gn_qnorm = solve_damped(&sys.normal, &sys.rhs, &d, d_max, 0.0)
+        .map(|h| quadratic_form(&h, &sys.normal));
+
     Ok(LMSolution {
         x,
         covariance: covariance(&sys.normal, &d, d_max),
         cost: sys.cost,
         data_cost: sys.data_cost,
-        accepted_step_qnorm: last_accepted.as_ref().map(|a| a.qnorm),
+        accepted_step_qnorm: last_accepted_qnorm,
+        final_gn_qnorm,
         gradient_norm_scaled,
         iterations,
         n_cost_evals,
@@ -3766,6 +3973,418 @@ mod tests {
             rejected_bits, GOLDEN_REJECTED_BITS,
             "rejected trial sequence changed"
         );
+    }
+
+    // ── Model refresh (inexact-model problems) ──
+
+    /// A problem whose objective is an **anchored surrogate**: the
+    /// residual is measured against a reference the problem is allowed
+    /// to move — but only inside `refresh_model`, never per call.
+    /// Every callback is logged so the driver's refresh sequence can
+    /// be asserted exactly.
+    struct AnchoredSurrogate {
+        /// The anchor the current objective is measured against.
+        anchor: f64,
+        /// Anchor to adopt at the next refresh (one-shot).
+        next_anchor: Option<f64>,
+        /// `Some` to make the re-assembly after the refresh fail.
+        fail_after_refresh: bool,
+        log: Vec<(&'static str, f64)>,
+    }
+
+    impl AnchoredSurrogate {
+        fn new(anchor: f64) -> Self {
+            Self {
+                anchor,
+                next_anchor: None,
+                fail_after_refresh: false,
+                log: Vec::new(),
+            }
+        }
+        fn residual(&self, x: f64) -> f64 {
+            x - self.anchor
+        }
+        fn steps(&self, kind: &str) -> Vec<f64> {
+            self.log
+                .iter()
+                .filter(|(k, _)| *k == kind)
+                .map(|(_, v)| *v)
+                .collect()
+        }
+    }
+
+    impl CostProblem<1> for AnchoredSurrogate {
+        type Error = TestError;
+        fn evaluate_cost(&mut self, x: &[f64; 1]) -> Result<f64, TestError> {
+            self.log.push(("cost", x[0]));
+            let r = self.residual(x[0]);
+            Ok(r * r)
+        }
+        fn on_step_accepted(&mut self, x: &[f64; 1]) {
+            self.log.push(("accepted", x[0]));
+        }
+        fn on_step_rejected(&mut self, x: &[f64; 1]) {
+            self.log.push(("rejected", x[0]));
+        }
+        fn refresh_model(&mut self, x: &[f64; 1]) -> bool {
+            self.log.push(("refresh", x[0]));
+            match self.next_anchor.take() {
+                Some(a) => {
+                    self.anchor = a;
+                    true
+                }
+                None => false,
+            }
+        }
+    }
+
+    impl ResidualProblem<1> for AnchoredSurrogate {
+        fn evaluate(&mut self, x: &[f64; 1]) -> Result<NLLSEvaluation<1>, TestError> {
+            self.log.push(("evaluate", x[0]));
+            if self.fail_after_refresh && self.next_anchor.is_none() && self.anchor != 1.0 {
+                return Err(TestError("refreshed model cannot be evaluated"));
+            }
+            let r = self.residual(x[0]);
+            Ok(NLLSEvaluation {
+                residuals: vec![r],
+                jacobian: vec![[1.0]],
+                cost: r * r,
+            })
+        }
+    }
+
+    /// A `refresh_model` declaration must re-assemble at the CURRENT
+    /// accepted point and re-commit it BEFORE any trial of that
+    /// iteration — otherwise the driver would damp a system built from
+    /// the old model while comparing trials evaluated under the new
+    /// one, which is exactly the cross-model gain ratio the hook
+    /// exists to prevent.
+    #[test]
+    fn test_refresh_model_reassembles_and_recommits_before_any_trial() {
+        let mut p = AnchoredSurrogate::new(1.0);
+        p.next_anchor = Some(3.0);
+        let sol = solve(&mut p, [0.0], &config(), None).unwrap();
+
+        // Refresh happened once, at the accepted point x = 0.
+        assert_eq!(p.steps("refresh")[0], 0.0);
+        // ... and was immediately followed by a full evaluation and a
+        // commit at that same point, before the first trial cost.
+        let order: Vec<&'static str> = p.log.iter().map(|(k, _)| *k).collect();
+        let first_refresh = order.iter().position(|k| *k == "refresh").unwrap();
+        assert_eq!(
+            &order[first_refresh..first_refresh + 3],
+            &["refresh", "evaluate", "accepted"],
+            "log: {:?}",
+            p.log
+        );
+        assert_eq!(
+            p.log[first_refresh + 1].1,
+            0.0,
+            "re-assembled at x, not x+h"
+        );
+        assert_eq!(p.log[first_refresh + 2].1, 0.0, "re-committed at x");
+
+        // The solve minimized the REFRESHED objective, not the one it
+        // started with.
+        assert!(sol.converged, "{:?}", sol.reason);
+        assert!((sol.x[0] - 3.0).abs() < 1e-6, "x = {}", sol.x[0]);
+        assert!(sol.cost < 1e-12, "cost = {}", sol.cost);
+    }
+
+    /// The default hook is inert: a problem that never refreshes must
+    /// spend no extra evaluation and must trace exactly as before.
+    #[test]
+    fn test_refresh_model_false_spends_no_evaluation() {
+        let mut p = AnchoredSurrogate::new(3.0);
+        let sol = solve(&mut p, [0.0], &config(), None).unwrap();
+        assert!(sol.converged, "{:?}", sol.reason);
+        // One evaluation at x0 plus one per accepted trial — no
+        // re-assembly anywhere.
+        let evaluates = p.steps("evaluate");
+        let costs = p.steps("cost");
+        assert_eq!(
+            evaluates.len(),
+            costs.len() + 1,
+            "an extra full evaluation appeared without a refresh: {:?}",
+            p.log
+        );
+        assert!(!p.steps("refresh").is_empty(), "hook was never called");
+    }
+
+    /// If the re-assembly a refresh requires fails, there is no
+    /// retreat — the problem has already switched models, so the
+    /// system the driver holds describes an objective the problem no
+    /// longer evaluates. It must surface, not silently damp a stale
+    /// system.
+    #[test]
+    fn test_refresh_model_reassembly_failure_surfaces() {
+        let mut p = AnchoredSurrogate::new(1.0);
+        p.next_anchor = Some(3.0);
+        p.fail_after_refresh = true;
+        let err = solve(&mut p, [0.0], &config(), None).unwrap_err();
+        assert!(
+            matches!(err, LMError::ModelRefreshFailed { iteration: 1, .. }),
+            "{err:?}"
+        );
+    }
+
+    /// Residual of the model `RefreshOntoStationaryModel` refreshes
+    /// ONTO: constant and tiny, so its undamped Gauss-Newton step is
+    /// 1e-9 and its quadratic form 1e-18 — stationary to any sane
+    /// `qtol` — while no trial can lower its cost.
+    const STATIONARY_RESIDUAL: f64 = 1e-9;
+
+    /// A problem that refreshes onto a model which is ALREADY
+    /// stationary at the point the refresh happens, but whose trial
+    /// costs never improve — so the trial loop can only escalate μ
+    /// until the damping cap. This is the shape of a surrogate handing
+    /// back to the full model at a converged iterate: the handover
+    /// lands on a point the NEW model also calls converged, and every
+    /// step it can propose is below the noise.
+    struct RefreshOntoStationaryModel {
+        refreshed: bool,
+    }
+
+    impl RefreshOntoStationaryModel {
+        /// Before the refresh, r = x − 1 (so x₀ = 0 is nowhere near
+        /// stationary and the iteration-1 battery cannot fire). After
+        /// it, the constant stationary residual.
+        fn residual(&self, x: f64) -> f64 {
+            if self.refreshed {
+                STATIONARY_RESIDUAL
+            } else {
+                x - 1.0
+            }
+        }
+    }
+
+    impl CostProblem<1> for RefreshOntoStationaryModel {
+        type Error = TestError;
+        fn evaluate_cost(&mut self, x: &[f64; 1]) -> Result<f64, TestError> {
+            let r = self.residual(x[0]);
+            Ok(r * r)
+        }
+        fn refresh_model(&mut self, _x: &[f64; 1]) -> bool {
+            if self.refreshed {
+                false
+            } else {
+                self.refreshed = true;
+                true
+            }
+        }
+    }
+
+    impl ResidualProblem<1> for RefreshOntoStationaryModel {
+        fn evaluate(&mut self, x: &[f64; 1]) -> Result<NLLSEvaluation<1>, TestError> {
+            let r = self.residual(x[0]);
+            Ok(NLLSEvaluation {
+                residuals: vec![r],
+                jacobian: vec![[1.0]],
+                cost: r * r,
+            })
+        }
+    }
+
+    /// The convergence battery must re-run against the model a refresh
+    /// installed, at the point it was installed at, BEFORE the trial
+    /// loop. Without it the driver walks straight into the trials,
+    /// exhausts damping and reports FAILURE at a point where the
+    /// undamped Gauss-Newton step — the quantity `qtol` is decided on
+    /// — is twelve orders of magnitude below the tolerance.
+    #[test]
+    fn test_refresh_model_convergence_is_tested_on_the_new_model() {
+        let mut cfg = config();
+        cfg.qtol = 1e-12;
+        let mut p = RefreshOntoStationaryModel { refreshed: false };
+        let sol = solve(&mut p, [0.0], &cfg, None).unwrap();
+
+        assert!(
+            sol.converged,
+            "declared failure at a point the refreshed model calls converged: {:?}",
+            sol.reason
+        );
+        assert_eq!(sol.reason, TerminationReason::StepTolerance);
+        // The refresh happened at x₀ and the driver never left it —
+        // the new model was stationary there.
+        assert_eq!(sol.x[0], 0.0);
+        assert_eq!(sol.iterations, 1);
+        // Not one trial was spent: the battery ran first.
+        assert_eq!(sol.n_cost_evals, 0);
+        // And the reported metric agrees with the reason given.
+        let gn = sol.final_gn_qnorm.expect("well-posed after the refresh");
+        assert!(gn <= cfg.qtol, "{gn:.3e} vs qtol {:.3e}", cfg.qtol);
+    }
+
+    /// The other direction: the post-refresh battery must not fire on
+    /// a model that is NOT stationary at the handover point. The
+    /// refresh here moves the anchor to 3 while the driver sits at 0,
+    /// so the solve must go on to minimize the new objective.
+    #[test]
+    fn test_refresh_model_does_not_terminate_on_a_moving_model() {
+        let mut cfg = config();
+        cfg.qtol = 1e-12;
+        let mut p = AnchoredSurrogate::new(1.0);
+        p.next_anchor = Some(3.0);
+        let sol = solve(&mut p, [0.0], &cfg, None).unwrap();
+        assert!(sol.converged, "{:?}", sol.reason);
+        assert!((sol.x[0] - 3.0).abs() < 1e-6, "x = {}", sol.x[0]);
+        assert!(
+            !p.steps("cost").is_empty(),
+            "the post-refresh battery swallowed the trial loop"
+        );
+    }
+
+    /// A problem that accepts steps for one iteration and only THEN
+    /// refreshes, onto a model that is stationary where it lands.
+    struct RefreshAfterAStep {
+        refreshed: bool,
+        iterations_seen: usize,
+    }
+
+    impl RefreshAfterAStep {
+        fn residual(&self, x: f64) -> f64 {
+            if self.refreshed {
+                STATIONARY_RESIDUAL
+            } else {
+                x - 100.0
+            }
+        }
+    }
+
+    impl CostProblem<1> for RefreshAfterAStep {
+        type Error = TestError;
+        fn evaluate_cost(&mut self, x: &[f64; 1]) -> Result<f64, TestError> {
+            let r = self.residual(x[0]);
+            Ok(r * r)
+        }
+        fn refresh_model(&mut self, _x: &[f64; 1]) -> bool {
+            self.iterations_seen += 1;
+            if self.refreshed || self.iterations_seen < 2 {
+                false
+            } else {
+                self.refreshed = true;
+                true
+            }
+        }
+    }
+
+    impl ResidualProblem<1> for RefreshAfterAStep {
+        fn evaluate(&mut self, x: &[f64; 1]) -> Result<NLLSEvaluation<1>, TestError> {
+            let r = self.residual(x[0]);
+            Ok(NLLSEvaluation {
+                residuals: vec![r],
+                jacobian: vec![[1.0]],
+                cost: r * r,
+            })
+        }
+    }
+
+    /// A model refresh clears the ftol bookkeeping — it must not also
+    /// erase the record that a step was ever accepted. The two are
+    /// different claims: `actred`/`pred` stop being comparable across a
+    /// refresh, but "the last step taken had this size" stays true.
+    /// Reporting `None` here says "no step was accepted", which callers
+    /// read as "the start point was already stationary" — scott's
+    /// `ODResult::update_norm` reports a literal 0.0 on that reading.
+    #[test]
+    fn test_accepted_step_qnorm_survives_a_model_refresh() {
+        let mut cfg = config();
+        cfg.qtol = 1e-12;
+        let mut p = RefreshAfterAStep {
+            refreshed: false,
+            iterations_seen: 0,
+        };
+        let sol = solve(&mut p, [0.0], &cfg, None).unwrap();
+
+        assert!(sol.converged, "{:?}", sol.reason);
+        assert!(p.refreshed, "the refresh never happened");
+        assert!(
+            sol.x[0] != 0.0,
+            "the solve must have accepted a step before refreshing"
+        );
+        let q = sol.accepted_step_qnorm.expect(
+            "a solve that accepted a step and then refreshed still accepted a step — \
+             None here reads as 'the start point was already stationary'",
+        );
+        assert!(q > 0.0, "qnorm = {q}");
+    }
+
+    // ── Reported step norms ──
+
+    /// `accepted_step_qnorm` and `final_gn_qnorm` measure different
+    /// things and only the latter is comparable to `qtol`. On a
+    /// μ-starved solve the accepted (damped) step is vanishingly
+    /// small at a garbage iterate while the undamped Gauss-Newton step
+    /// — the quantity the test is actually decided on — is enormous.
+    /// Quoting the former against a tolerance is what makes a failure
+    /// message read as "converged".
+    #[test]
+    fn test_final_gn_qnorm_is_the_convergence_metric_not_the_accepted_step() {
+        fn stiff_cost(x: f64) -> f64 {
+            if x.abs() < 1e-7 {
+                1e6 - 1e-3 * (1e-7 - x.abs()) / 1e-7
+            } else {
+                1e6 + 1.0
+            }
+        }
+        struct StiffValley;
+        impl CostProblem<1> for StiffValley {
+            type Error = TestError;
+            fn evaluate_cost(&mut self, x: &[f64; 1]) -> Result<f64, TestError> {
+                Ok(stiff_cost(x[0]))
+            }
+        }
+        impl ResidualProblem<1> for StiffValley {
+            fn evaluate(&mut self, x: &[f64; 1]) -> Result<NLLSEvaluation<1>, TestError> {
+                Ok(NLLSEvaluation {
+                    residuals: vec![x[0] - 1000.0],
+                    jacobian: vec![[1.0]],
+                    cost: stiff_cost(x[0]),
+                })
+            }
+        }
+        let mut cfg = config();
+        cfg.gtol = 0.0;
+        cfg.xtol = 0.0;
+        cfg.ftol = 0.0;
+        cfg.qtol = 1.0;
+        cfg.max_iterations = 30;
+        let sol = solve(&mut StiffValley, [0.0], &cfg, None).unwrap();
+        assert!(!sol.converged, "{:?}", sol.reason);
+
+        let gn = sol.final_gn_qnorm.expect("undamped system is well posed");
+        assert!(
+            gn > cfg.qtol,
+            "the metric convergence is decided on must be ABOVE the tolerance on a \
+             non-converged solve: {gn:.3e} vs qtol {:.3e}",
+            cfg.qtol
+        );
+        if let Some(accepted) = sol.accepted_step_qnorm {
+            assert!(
+                accepted < cfg.qtol,
+                "this regression needs a μ-crushed accepted step to be meaningful: {accepted:.3e}"
+            );
+            assert!(
+                gn / accepted > 1e6,
+                "the two norms should be orders of magnitude apart: {gn:.3e} vs {accepted:.3e}"
+            );
+        }
+    }
+
+    /// On a converged solve the reported metric is below the tolerance
+    /// it was tested against — the other direction of the same
+    /// contract.
+    #[test]
+    fn test_final_gn_qnorm_below_qtol_on_a_step_tolerance_exit() {
+        let mut cfg = config();
+        cfg.gtol = 0.0;
+        cfg.ftol = 0.0;
+        cfg.qtol = 1e-12;
+        let mut p = Tracked::new(overshoot_rational);
+        let sol = solve(&mut p, [6.5], &cfg, None).unwrap();
+        assert!(sol.converged, "{:?}", sol.reason);
+        let gn = sol.final_gn_qnorm.expect("well-posed at the solution");
+        assert!(gn <= cfg.qtol, "{gn:.3e} vs qtol {:.3e}", cfg.qtol);
     }
 
     const GOLDEN_MU_FINAL_BITS: u64 = 4565320297239836560;
