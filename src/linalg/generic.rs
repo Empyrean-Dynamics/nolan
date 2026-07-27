@@ -205,7 +205,13 @@ pub fn mat_quadratic_form<T: Copy + DifferentiableMath, const N: usize>(
 /// Cholesky decomposition of an \\(N \times N\\) symmetric positive-definite matrix.
 ///
 /// Returns the lower-triangular factor \\(L\\) such that \\(A = L L^\top\\).
-/// Returns `None` if the matrix is not positive-definite.
+/// Returns `None` if the matrix is not positive-definite, or if any entry
+/// is non-finite: a `NaN` anywhere in \\(A\\) propagates into the pivot
+/// \\(a_{ii} - \sum_k l_{ik}^2\\) of its own row, and the pivot guard is
+/// written NaN-safely (`!(d > 0)` rather than `d <= 0`) so a poisoned
+/// matrix can never yield `Some` with `NaN`/`inf` contents — the failure
+/// mode that lets an invalid upstream weight matrix corrupt a solve
+/// silently instead of failing loudly.
 #[allow(clippy::needless_range_loop)]
 pub fn mat_cholesky<const N: usize>(a: &[[f64; N]; N]) -> Option<[[f64; N]; N]> {
     let mut l = [[0.0_f64; N]; N];
@@ -217,7 +223,7 @@ pub fn mat_cholesky<const N: usize>(a: &[[f64; N]; N]) -> Option<[[f64; N]; N]> 
             }
             if i == j {
                 let diag = a[i][i] - sum;
-                if diag <= 0.0 {
+                if !(diag > 0.0 && diag.is_finite()) {
                     return None;
                 }
                 l[i][j] = diag.sqrt();
@@ -1329,6 +1335,25 @@ mod tests {
     fn test_mat_cholesky_not_spd() {
         let a = [[1.0, 0.0], [0.0, -1.0]];
         assert!(mat_cholesky(&a).is_none());
+    }
+
+    #[test]
+    fn test_mat_cholesky_non_finite_is_none_never_some_junk() {
+        // A NaN in the leading pivot is caught directly.
+        assert!(mat_cholesky(&[[f64::NAN, 0.0], [0.0, 1.0]]).is_none());
+        // A NaN AFTER a healthy pivot must not tunnel through the guard:
+        // pre-fix, `diag <= 0.0` is false for NaN and this returned
+        // Some([[1, 0], [NaN, NaN]]).
+        assert!(mat_cholesky(&[[1.0, f64::NAN], [f64::NAN, f64::NAN]]).is_none());
+        // Off-diagonal NaN with finite diagonals poisons its own row's pivot.
+        assert!(mat_cholesky(&[[1.0, f64::NAN], [f64::NAN, 2.0]]).is_none());
+        // Infinite entries are rejected rather than yielding inf factors.
+        assert!(mat_cholesky(&[[f64::INFINITY, 0.0], [0.0, 1.0]]).is_none());
+        assert!(mat_cholesky(&[[1.0, f64::INFINITY], [f64::INFINITY, 1.0]]).is_none());
+        // The invalid weight matrix observed in the wild (zero variance on
+        // one axis, NaN correlation) fails loudly, not with a poisoned
+        // factor.
+        assert!(mat_cholesky(&[[0.0, f64::NAN], [f64::NAN, f64::NAN]]).is_none());
     }
 
     #[test]
