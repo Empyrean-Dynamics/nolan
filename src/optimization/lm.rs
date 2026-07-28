@@ -467,7 +467,15 @@ pub enum CovarianceFailure {
 }
 
 /// Solver output.
+///
+/// `#[non_exhaustive]`, so struct-literal construction is reserved to
+/// the solver — an `LMSolution` built anywhere else would be a
+/// fabricated solver output — and future diagnostic fields (like
+/// [`n_model_refreshes`](Self::n_model_refreshes), added in 1.11) stay
+/// additive for downstream readers instead of breaking exhaustive
+/// destructuring silently.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct LMSolution<const N: usize> {
     /// The retained iterate (best visited: cost is monotone
     /// non-increasing across accepted steps *of one model* — a
