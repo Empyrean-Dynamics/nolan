@@ -165,8 +165,27 @@ const D_FLOOR_REL: f64 = 1e-12;
 #[non_exhaustive]
 pub struct LMConfig {
     /// Maximum **outer** iterations (each holds one system/Jacobian
-    /// snapshot; full evaluations = 1 initial + accepted steps +
-    /// rolled-back acceptances). Must be ≥ 1.
+    /// snapshot). Must be ≥ 1.
+    ///
+    /// This bounds ITERATIONS, not evaluations. Full evaluations
+    /// (residuals + Jacobian) =
+    ///
+    /// \\[
+    ///   1_{\text{initial}} \;+\; \text{accepted steps} \;+\;
+    ///   \text{rolled-back acceptances} \;+\;
+    ///   \text{model refreshes}
+    /// \\]
+    ///
+    /// The last term is the
+    /// [`refresh_model`](CostProblem::refresh_model) hook: every `true`
+    /// declaration costs one additional full evaluation, reported as
+    /// [`LMSolution::n_model_refreshes`]. It is offered at most once
+    /// per outer iteration, so that term is bounded by
+    /// [`LMSolution::iterations`] — but it is NOT charged against this
+    /// budget, and a solve that refreshes on every iteration performs
+    /// up to `max_iterations` full evaluations more than the first
+    /// three terms imply. Problems that never refresh (the default
+    /// hook returns `false`) spend none.
     pub max_iterations: usize,
     /// Trial budget per outer iteration (rejections re-use the same
     /// system). Must be ≥ 1.
@@ -319,6 +338,16 @@ pub trait CostProblem<const N: usize> {
     /// and the trials it compares against are the same objective
     /// again. Note that the objective's *value* may jump across a
     /// refresh: cost monotonicity holds per model, not across one.
+    ///
+    /// **Cost:** each `true` spends one extra FULL evaluation
+    /// (residuals + Jacobian) beyond the trial-driven ones, at the
+    /// current point. It is *outside* the
+    /// [`max_iterations`](LMConfig::max_iterations) iteration budget —
+    /// a refresh does not consume an outer iteration — and is reported
+    /// as [`LMSolution::n_model_refreshes`] so a caller sizing a
+    /// wall-clock budget can account for it. For a problem whose
+    /// assembly is the expensive part (an n-body propagation over an
+    /// observation arc), that is the dominant per-refresh cost.
     ///
     /// Return `false` (the default) to keep the current system; no
     /// evaluation is spent.
@@ -496,6 +525,20 @@ pub struct LMSolution<const N: usize> {
     pub n_invalid_trials: usize,
     /// Trials whose step carried the geodesic-acceleration correction.
     pub n_accelerated_trials: usize,
+    /// [`refresh_model`](CostProblem::refresh_model) declarations that
+    /// fired, i.e. the number of extra FULL evaluations (residuals +
+    /// Jacobian) the driver spent re-assembling at the current point
+    /// after the problem swapped its model.
+    ///
+    /// These are outside the [`max_iterations`](LMConfig::max_iterations)
+    /// iteration budget and are counted by no other field, so a caller
+    /// sizing a wall-clock budget against assembly cost must add them —
+    /// see the evaluation accounting on
+    /// [`max_iterations`](LMConfig::max_iterations). Bounded by
+    /// [`iterations`](Self::iterations) (a refresh is offered at most
+    /// once per outer iteration) and `0` for every problem that leaves
+    /// the default hook in place.
+    pub n_model_refreshes: usize,
     /// Final damping parameter.
     pub mu_final: f64,
     /// Whether a convergence criterion was met.
@@ -1729,6 +1772,7 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
     let mut n_rejected_trials = 0usize;
     let mut n_invalid_trials = 0usize;
     let mut n_accelerated_trials = 0usize;
+    let mut n_model_refreshes = 0usize;
 
     let mut converged = false;
     let mut reason = TerminationReason::MaxIterations;
@@ -1757,6 +1801,16 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
         // the objective the driver was actually minimizing, and a
         // solve that terminates here spends no refresh evaluation.
         if source.refresh_model(&x) {
+            // The re-assembly below is a FULL evaluation (residuals +
+            // Jacobian) that no trial counter sees and that
+            // `max_iterations` does not bound — for a problem whose
+            // assembly is an n-body propagation it is the dominant
+            // per-refresh cost. Counted here, at the declaration, so
+            // the reported number is the number of assemblies the
+            // refresh path actually spent (the failure arms below
+            // return, so the count is only ever read on a solve that
+            // completed every one of them).
+            n_model_refreshes += 1;
             sys = match source.assemble(&x) {
                 Ok(s) => s,
                 // No retreat: the problem has already switched models,
@@ -2112,6 +2166,7 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
         n_rejected_trials,
         n_invalid_trials,
         n_accelerated_trials,
+        n_model_refreshes,
         mu_final: mu,
         converged,
         reason,
@@ -4067,6 +4122,7 @@ mod tests {
 
         // Refresh happened once, at the accepted point x = 0.
         assert_eq!(p.steps("refresh")[0], 0.0);
+        assert_eq!(sol.n_model_refreshes, 1, "one declaration, one assembly");
         // ... and was immediately followed by a full evaluation and a
         // commit at that same point, before the first trial cost.
         let order: Vec<&'static str> = p.log.iter().map(|(k, _)| *k).collect();
@@ -4109,6 +4165,76 @@ mod tests {
             p.log
         );
         assert!(!p.steps("refresh").is_empty(), "hook was never called");
+        assert_eq!(sol.n_model_refreshes, 0, "nothing declared a refresh");
+    }
+
+    /// The evaluation budget documented on
+    /// [`LMConfig::max_iterations`] must match what the solver spends:
+    /// a refresh costs one FULL assembly (residuals + Jacobian) beyond
+    /// the trial-driven ones, and `LMSolution::n_model_refreshes` is
+    /// the only field that reports it.
+    ///
+    /// Measured against a NO-OP refresh — the hook returns `true` while
+    /// re-anchoring the surrogate at the value it already had. The
+    /// objective is bit-identical before and after, and the refresh
+    /// fires at iteration 1 where `last_accepted` is already `None`, so
+    /// the post-refresh convergence battery re-runs the test that just
+    /// returned `None` and the trajectory is unchanged. Anything the
+    /// two solves differ by is therefore the refresh's own cost, and
+    /// nothing else — which pins the count exactly at one extra
+    /// assembly per declaration.
+    #[test]
+    fn test_refresh_model_assembly_is_counted_and_costs_one_evaluation() {
+        // Baseline: same problem, hook never declares.
+        let mut plain = AnchoredSurrogate::new(3.0);
+        let sol_plain = solve(&mut plain, [0.0], &config(), None).unwrap();
+
+        // Same problem, one no-op refresh declared at iteration 1.
+        let mut refreshed = AnchoredSurrogate::new(3.0);
+        refreshed.next_anchor = Some(3.0);
+        let sol_refresh = solve(&mut refreshed, [0.0], &config(), None).unwrap();
+
+        // The refresh changed nothing about the objective, so every
+        // other counter and the whole trajectory must be identical.
+        assert_eq!(sol_refresh.x[0].to_bits(), sol_plain.x[0].to_bits());
+        assert_eq!(sol_refresh.cost.to_bits(), sol_plain.cost.to_bits());
+        assert_eq!(sol_refresh.iterations, sol_plain.iterations);
+        assert_eq!(sol_refresh.n_cost_evals, sol_plain.n_cost_evals);
+        assert_eq!(sol_refresh.n_rejected_trials, sol_plain.n_rejected_trials);
+        assert_eq!(sol_refresh.n_invalid_trials, sol_plain.n_invalid_trials);
+        assert_eq!(sol_refresh.reason, sol_plain.reason);
+
+        // The declaration is counted...
+        assert_eq!(sol_plain.n_model_refreshes, 0);
+        assert_eq!(sol_refresh.n_model_refreshes, 1);
+
+        // ... and costs EXACTLY that many extra full assemblies.
+        let plain_assemblies = plain.steps("evaluate").len();
+        let refresh_assemblies = refreshed.steps("evaluate").len();
+        assert_eq!(
+            refresh_assemblies,
+            plain_assemblies + sol_refresh.n_model_refreshes,
+            "refresh assemblies {refresh_assemblies} vs baseline {plain_assemblies}, \
+             reported refreshes {}; log: {:?}",
+            sol_refresh.n_model_refreshes,
+            refreshed.log,
+        );
+
+        // And the full documented budget line closes: assemblies =
+        // 1 initial + provisional acceptances + refreshes. This
+        // problem is exactly linear, so no acceptance is ever rolled
+        // back and each accepted trial assembles once; the `accepted`
+        // callbacks are the initial commit, the refresh re-commit, and
+        // one per committed step.
+        let commits = refreshed.steps("accepted").len() - 1 - sol_refresh.n_model_refreshes;
+        assert_eq!(
+            refresh_assemblies,
+            1 + commits + sol_refresh.n_model_refreshes,
+            "log: {:?}",
+            refreshed.log
+        );
+        // Bounded by the iteration count, as documented.
+        assert!(sol_refresh.n_model_refreshes <= sol_refresh.iterations);
     }
 
     /// If the re-assembly a refresh requires fails, there is no
