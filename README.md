@@ -40,7 +40,7 @@ The repo and internal codename stay `nolan`.
 
 ```toml
 [dependencies]
-hyperjet = "1.10.0"
+hyperjet = "1.11.0"
 ```
 ```rust
 use hyperjet::jets::Jet1;
@@ -51,7 +51,7 @@ Internal Empyrean callers can alias the dep back to `nolan` so existing
 
 ```toml
 [dependencies]
-nolan = { package = "hyperjet", version = "1.10.0" }
+nolan = { package = "hyperjet", version = "1.11.0" }
 ```
 ```rust,ignore
 use nolan::jets::Jet1;
