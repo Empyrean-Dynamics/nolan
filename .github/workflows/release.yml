@@ -57,25 +57,22 @@ jobs:
         with:
           generate_release_notes: true
 
-      # ── Cross-repo: trigger validation suite ─────────────────────
-      # Tag pushes are the moment this repo commits to "this is the
-      # version downstream consumers (empyrean-core's pin, then the
-      # four distribution channels) will adopt." Fire the validation
-      # workflow in empyrean-validation so the new tag is exercised
-      # against the cross-channel suite before downstream bumps the
-      # pin.
+      # ── Cross-repo: validation is NOT dispatched from here ───────
+      # This workflow used to fire `sibling-tag-push` at
+      # empyrean-validation on every tag. It no longer does, and that
+      # event type is no longer accepted there — both sides were
+      # removed together, so nothing dispatches into a type that is
+      # gone.
       #
-      # Pre-tag main pushes do NOT dispatch — see the validation
-      # workflow's "Cross-repo dispatch" doc block.
+      # A tag by itself is not what the validation suite measures. That
+      # ~55-job cross-channel run answers "does the stack users actually
+      # get still agree with the external references," and a tag nobody
+      # has adopted yet has not moved that stack. The transition that
+      # does is empyrean-core bumping its pin to this tag — a push to
+      # empyrean-core's main, and therefore already a
+      # `sibling-main-push`. This tag is still validated, one hop later,
+      # at adoption rather than at creation.
       #
-      # Requires `VALIDATION_DISPATCH_TOKEN` — a fine-grained PAT
-      # scoped to the empyrean-validation repo only with
-      # `actions: write`.
-      - name: Dispatch sibling-tag-push to empyrean-validation
-        env:
-          GH_TOKEN: ${{ secrets.VALIDATION_DISPATCH_TOKEN }}
-        run: |
-          gh api repos/Empyrean-Dynamics/empyrean-validation/dispatches \
-            -f event_type=sibling-tag-push \
-            -f "client_payload[source]=${{ github.repository }}" \
-            -f "client_payload[tag]=${{ github.ref_name }}"
+      # `VALIDATION_DISPATCH_TOKEN` is consequently unused in this repo
+      # and can be removed from its secrets. See the "Triggers" doc
+      # block in empyrean-validation/.github/workflows/validation.yml.
