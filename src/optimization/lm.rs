@@ -1804,8 +1804,15 @@ fn convergence_reason<const N: usize>(
     {
         let threshold = config.ftol * acc.prev_cost;
         let ratio_ok = acc.pred > 0.0 && acc.actred <= 2.0 * acc.pred;
-        let gn_exhausted =
-            predicted_reduction(&h_gn, &sys.normal, &sys.rhs) <= config.ftol * sys.cost;
+        // Same rule as the acceptance sites: when the square-root system
+        // is available this must not be evaluated through A either, or the
+        // convergence test is decided on a quantity with no significant
+        // digits left at high row-weight dynamic range.
+        let gn_pred = match (config.square_root_solve, sys.ls_rows.as_ref()) {
+            (true, Some((rows, b))) => predicted_reduction_rows(&h_gn, rows, b),
+            _ => predicted_reduction(&h_gn, &sys.normal, &sys.rhs),
+        };
+        let gn_exhausted = gn_pred <= config.ftol * sys.cost;
         if acc.actred.abs() <= threshold && acc.pred <= threshold && ratio_ok && gn_exhausted {
             return Some(TerminationReason::CostTolerance);
         }
