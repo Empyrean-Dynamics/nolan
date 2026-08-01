@@ -244,6 +244,39 @@ pub struct LMConfig {
     /// the problem returns `None` from the hook or on the
     /// normal-equations path (no Jacobian rows).
     pub geodesic_acceleration: bool,
+    /// Correct the predicted reduction with the EXACT second-order term
+    /// \\(h^\\top S h\\), \\(S = \\sum_i r_i \\nabla^2 r_i\\)
+    /// (default: `false`).
+    ///
+    /// Gauss-Newton approximates \\(\\nabla^2\\Phi = J^\\top J + S\\) by
+    /// \\(J^\\top J\\). Dropping \\(S\\) is harmless only when the
+    /// residuals become small at the solution. On a LARGE-RESIDUAL fit it is
+    /// not: near the floor \\(J^\\top r \\to 0\\), so the linearized
+    /// problem reports itself stationary and the predicted reduction
+    /// collapses, while the true objective still has descent available. The
+    /// gain ratio then runs to hundreds and the consistency guard refuses
+    /// convergence — measured on a joint optical + radar orbit fit at
+    /// \\(\\chi^2/\\nu \\approx 13\\), where \\(\\rho\\) went 0.99, 65,
+    /// 297, 1061 across four iterations.
+    ///
+    /// NL2SOL (Dennis, Gay & Welsch 1981) carries a SECANT approximation to
+    /// \\(S\\). This does not approximate it. \\(h^\\top S h =
+    /// \\sum_i r_i (h^\\top \\nabla^2 r_i h)\\) is a residual-weighted
+    /// second directional derivative along \\(h\\) — exactly what
+    /// [`ResidualProblem::second_directional_derivative`] returns — so the
+    /// correction costs ONE second-order evaluation per trial and \\(S\\) is
+    /// never formed.
+    ///
+    /// This corrects the MODEL, not the step: the step still comes from the
+    /// Gauss-Newton system. It makes the gain ratio measure what it is
+    /// defined to measure, which is what a large-residual fit needs before
+    /// any of LM's acceptance and convergence logic is meaningful.
+    ///
+    /// Requires the residual path and a problem that implements the
+    /// second-derivative hook; declines silently to the Gauss-Newton model
+    /// when either is absent, since a missing second derivative is a
+    /// capability gap and not an error.
+    pub exact_second_order_model: bool,
     /// Compute the step by factoring the least-squares system directly
     /// instead of forming and factoring \(A + \mu D^2\) (default:
     /// `false`).
@@ -296,6 +329,9 @@ impl Default for LMConfig {
             // Off until measured per problem class: it changes the step
             // on any system where the two paths disagree numerically.
             square_root_solve: false,
+            // Costs one second-order evaluation per trial; off until a
+            // problem class is measured to need it.
+            exact_second_order_model: false,
         }
     }
 }
@@ -1567,6 +1603,27 @@ fn solve_damped<const N: usize>(
 /// failure this exists to remove.
 ///
 /// `rows` and `b` are the stacked system with \\(b = -r\\).
+/// The exact second-order correction to a predicted reduction:
+/// \\(h^\top S h = \sum_i r_i (h^\top \nabla^2 r_i h)\\), with
+/// \\(S = \sum_i r_i \nabla^2 r_i\\) the part of the least-squares Hessian
+/// Gauss-Newton drops.
+///
+/// `w` is the second directional derivative of the residual vector along
+/// \\(h\\) — \\((h^\top \nabla^2 r_i h)_i\\) — and `b` is the least-squares
+/// right-hand side, \\(b = -r\\). So
+/// \\(h^\top S h = \sum_i r_i w_i = -\sum_i b_i w_i\\), and the corrected
+/// model reduction is \\(\text{pred} - h^\top S h = \text{pred} + \sum_i b_i w_i\\).
+///
+/// `None` on a length mismatch — a partial correction would be worse than
+/// none, since it would silently apply curvature from some residuals and
+/// not others.
+fn second_order_correction(w: &[f64], b: &[f64]) -> Option<f64> {
+    if w.len() != b.len() {
+        return None;
+    }
+    Some(w.iter().zip(b).map(|(w_i, b_i)| w_i * b_i).sum())
+}
+
 fn predicted_reduction_rows<const N: usize>(h: &[f64; N], rows: &[[f64; N]], b: &[f64]) -> f64 {
     let mut acc = 0.0_f64;
     for (row, b_i) in rows.iter().zip(b) {
@@ -2114,9 +2171,21 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
             // (or NaN) still forces rejection — no blind division
             // anywhere.
             let pred = if clamped {
-                match (config.square_root_solve, sys.ls_rows.as_ref()) {
-                    (true, Some((rows, b))) => predicted_reduction_rows(&h, rows, b),
-                    _ => predicted_reduction(&h, &sys.normal, &sys.rhs),
+                {
+                    let gn = match (config.square_root_solve, sys.ls_rows.as_ref()) {
+                        (true, Some((rows, b))) => predicted_reduction_rows(&h, rows, b),
+                        _ => predicted_reduction(&h, &sys.normal, &sys.rhs),
+                    };
+                    // Fold in the exact curvature the Gauss-Newton model
+                    // omits. Declines to the GN model when the problem has
+                    // no second-derivative hook.
+                    match (config.exact_second_order_model, sys.ls_rows.as_ref()) {
+                        (true, Some((_, b))) => source
+                            .second_directional_derivative(&x, &h)
+                            .and_then(|w| second_order_correction(&w, b))
+                            .map_or(gn, |c| gn + c),
+                        _ => gn,
+                    }
                 }
             } else {
                 match (config.square_root_solve, sys.ls_rows.as_ref()) {
@@ -2729,6 +2798,63 @@ mod tests {
             ),
             "{err:?}"
         );
+    }
+
+    /// The exact second-order correction must reproduce the TRUE model
+    /// reduction on a large-residual problem, where the Gauss-Newton model
+    /// does not.
+    ///
+    /// Residuals r_i(x) = c_i - x^2 with c_i chosen so the fit cannot reach
+    /// zero: at the solution the residuals stay large, which is exactly the
+    /// regime where S = sum_i r_i grad^2 r_i stops being negligible. Here
+    /// grad^2 r_i = -2 for every i, so S = -2 * sum_i r_i is known in closed
+    /// form and the correction can be checked against arithmetic rather than
+    /// against another implementation.
+    #[test]
+    fn test_second_order_correction_matches_the_closed_form_s_term() {
+        // r_i = c_i - x^2, J_i = -2x, d2r_i/dx2 = -2.
+        let c = [1.0_f64, 4.0, 9.0];
+        let x = [1.5_f64];
+        let h = [0.25_f64];
+
+        let r: Vec<f64> = c.iter().map(|ci| ci - x[0] * x[0]).collect();
+        let b: Vec<f64> = r.iter().map(|ri| -ri).collect();
+        // Second directional derivative along h: h^T grad^2 r_i h = -2 h^2.
+        let w: Vec<f64> = c.iter().map(|_| -2.0 * h[0] * h[0]).collect();
+
+        let correction = second_order_correction(&w, &b).expect("lengths match");
+
+        // h^T S h = sum_i r_i * (h^T grad^2 r_i h), and the corrected model
+        // reduction is pred - h^T S h = pred + correction.
+        let hsh: f64 = r.iter().zip(&w).map(|(ri, wi)| ri * wi).sum();
+        assert!(
+            (correction + hsh).abs() < 1e-12,
+            "correction {correction} should be -(h^T S h) = {}",
+            -hsh
+        );
+
+        // And S is not negligible NEXT TO the Gauss-Newton term, which is the
+        // statement that matters: an absolute threshold would only measure the
+        // fixture's units. J_i = -2x for every row, so h^T J^T J h is exact
+        // arithmetic here too. If this ratio ever collapses, the fixture has
+        // stopped exercising the large-residual regime and the test is vacuous.
+        let jtj: f64 = c.iter().map(|_| 4.0 * x[0] * x[0]).sum();
+        let hjjh = jtj * h[0] * h[0];
+        assert!(
+            hsh.abs() / hjjh > 0.1,
+            "S contributes only {:.1}% of the Gauss-Newton term; the fixture is \
+             no longer large-residual",
+            100.0 * hsh.abs() / hjjh,
+        );
+    }
+
+    /// A length mismatch yields no correction rather than a partial one.
+    /// Applying curvature from some residuals and not others would be a
+    /// quietly wrong model, which is worse than the Gauss-Newton model it
+    /// was meant to improve.
+    #[test]
+    fn test_second_order_correction_refuses_a_partial_application() {
+        assert!(second_order_correction(&[1.0, 2.0], &[1.0]).is_none());
     }
 
     /// THE CASE THE SQUARE-ROOT PATH EXISTS FOR.
