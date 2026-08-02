@@ -2067,20 +2067,36 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                         qr.push_row(&scaled, *rhs_i);
                     }
                     qr.push_damping(mu);
-                    qr.solve().map(|h_scaled| {
+                    let h = qr.solve().map(|h_scaled| {
                         let mut h = [0.0_f64; N];
                         for j in 0..N {
                             h[j] = h_scaled[j] / effective_scale(d[j], d_max);
                         }
                         h
-                    })
+                    })?;
+                    // R^T R equals the SCALED damped normal matrix, so R^T
+                    // is precisely the lower Cholesky factor
+                    // `solve_with_factor` expects — the Givens diagonal is
+                    // non-negative by construction (hypot). Handing it back
+                    // keeps geodesic acceleration alive on this path with no
+                    // squared matrix ever formed; without it the square-root
+                    // path silently disabled the one remedy the
+                    // narrow-canyon stall calls for.
+                    let r = qr.r();
+                    let mut l = [[0.0_f64; N]; N];
+                    for (i, row) in l.iter_mut().enumerate() {
+                        for (j, slot) in row.iter_mut().enumerate() {
+                            *slot = r[j][i];
+                        }
+                    }
+                    Some((l, h))
                 })
             } else {
                 None
             };
 
             let velocity = if config.square_root_solve {
-                sqrt_step.map(|h| (None, h))
+                sqrt_step.map(|(l, h)| (Some(l), h))
             } else {
                 damped_factor(&sys.normal, &d, d_max, mu)
                     .and_then(|l| solve_with_factor(&l, &sys.rhs, &d, d_max).map(|h| (Some(l), h)))
@@ -2121,10 +2137,10 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                         rhs_a[j] -= row[j] * w_i;
                     }
                 }
-                // Acceleration needs the Cholesky factor of the damped
-                // normal matrix. The square-root path never forms one, so
-                // it declines the correction here rather than mixing
-                // solvers to manufacture it.
+                // Both paths supply a Cholesky factor of the damped
+                // system: the Cholesky path its L, the square-root path
+                // R^T, whose self-product is the scaled damped normal
+                // matrix.
                 if let Some(a) = factor
                     .as_ref()
                     .and_then(|l| solve_with_factor(l, &rhs_a, &d, d_max))
