@@ -41,6 +41,7 @@ pub mod generic;
 pub mod mat3;
 pub mod mat6;
 pub mod mat9;
+pub mod qr;
 pub mod regularize;
 pub mod vec3;
 

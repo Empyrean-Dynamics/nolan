@@ -244,6 +244,64 @@ pub struct LMConfig {
     /// the problem returns `None` from the hook or on the
     /// normal-equations path (no Jacobian rows).
     pub geodesic_acceleration: bool,
+    /// Correct the predicted reduction with the EXACT second-order term
+    /// \\(h^\\top S h\\), \\(S = \\sum_i r_i \\nabla^2 r_i\\)
+    /// (default: `false`).
+    ///
+    /// Gauss-Newton approximates \\(\\nabla^2\\Phi = J^\\top J + S\\) by
+    /// \\(J^\\top J\\). Dropping \\(S\\) is harmless only when the
+    /// residuals become small at the solution. On a LARGE-RESIDUAL fit it is
+    /// not: near the floor \\(J^\\top r \\to 0\\), so the linearized
+    /// problem reports itself stationary and the predicted reduction
+    /// collapses, while the true objective still has descent available. The
+    /// gain ratio then runs to hundreds and the consistency guard refuses
+    /// convergence — measured on a joint optical + radar orbit fit at
+    /// \\(\\chi^2/\\nu \\approx 13\\), where \\(\\rho\\) went 0.99, 65,
+    /// 297, 1061 across four iterations.
+    ///
+    /// NL2SOL (Dennis, Gay & Welsch 1981) carries a SECANT approximation to
+    /// \\(S\\). This does not approximate it. \\(h^\\top S h =
+    /// \\sum_i r_i (h^\\top \\nabla^2 r_i h)\\) is a residual-weighted
+    /// second directional derivative along \\(h\\) — exactly what
+    /// [`ResidualProblem::second_directional_derivative`] returns — so the
+    /// correction costs ONE second-order evaluation per trial and \\(S\\) is
+    /// never formed.
+    ///
+    /// This corrects the MODEL, not the step: the step still comes from the
+    /// Gauss-Newton system. It makes the gain ratio measure what it is
+    /// defined to measure, which is what a large-residual fit needs before
+    /// any of LM's acceptance and convergence logic is meaningful.
+    ///
+    /// Requires the residual path and a problem that implements the
+    /// second-derivative hook; declines silently to the Gauss-Newton model
+    /// when either is absent, since a missing second derivative is a
+    /// capability gap and not an error.
+    pub exact_second_order_model: bool,
+    /// Compute the step by factoring the least-squares system directly
+    /// instead of forming and factoring \(A + \mu D^2\) (default:
+    /// `false`).
+    ///
+    /// Forming the normal equations squares the condition number,
+    /// \(\kappa(A^\top A) = \kappa(A)^2\). When observation rows carry
+    /// weights spanning orders of magnitude — a joint orbit fit mixing
+    /// radar delay at microsecond \(\sigma\) with optical astrometry at
+    /// arcsecond \(\sigma\) differs by five orders in
+    /// \(\lvert J\rvert/\sigma\) — that squaring can put the system past
+    /// f64 range while the underlying problem is perfectly well posed
+    /// (Van Loan 1985). Damping then also enters as appended
+    /// \(\sqrt{\mu}\) rows rather than as \(\mu D^2\) on a squared
+    /// matrix, so large \(\mu\) cannot overflow the step.
+    ///
+    /// Only the STEP changes. The gain ratio, gradient test, predicted
+    /// reduction and reported covariance stay defined on \(A\) and
+    /// \(g\), so acceptance behaviour is unchanged on any problem where
+    /// both paths can compute a step at all.
+    ///
+    /// Requires the residual path (rows exist) and is inert on the
+    /// system path. Geodesic acceleration is unavailable here — it needs
+    /// the Cholesky factor of the damped normal matrix — and declines
+    /// rather than silently mixing solvers.
+    pub square_root_solve: bool,
     /// Acceleration acceptance guard (GSL `avmax`): the accelerated
     /// step is used only when \\(\lVert\mathbf{a}\rVert_D /
     /// \lVert\mathbf{v}\rVert_D \le \texttt{avmax}\\); beyond it
@@ -268,6 +326,12 @@ impl Default for LMConfig {
             max_consecutive_invalid: 5,
             geodesic_acceleration: false,
             avmax: 0.75,
+            // Off until measured per problem class: it changes the step
+            // on any system where the two paths disagree numerically.
+            square_root_solve: false,
+            // Costs one second-order evaluation per trial; off until a
+            // problem class is measured to need it.
+            exact_second_order_model: false,
         }
     }
 }
@@ -890,6 +954,16 @@ struct AssembledSystem<const N: usize> {
     /// `None` on the normal-equations path, which therefore cannot
     /// use acceleration.
     jacobian: Option<Vec<[f64; N]>>,
+    /// The least-squares system in SQUARE-ROOT form: stacked rows
+    /// \([J; L^\top]\) with right-hand side \([-r; -L^\top(x-m)]\),
+    /// where \(P_0^{-1} = L L^\top\) contributes the prior.
+    ///
+    /// Carried alongside `normal`/`rhs` rather than replacing them: the
+    /// gain ratio, the gradient test and the predicted reduction are all
+    /// defined on \(A\) and \(g\), so the square-root path changes only
+    /// how the STEP is computed. `None` on the normal-equations path,
+    /// which never sees rows.
+    ls_rows: Option<(Vec<[f64; N]>, Vec<f64>)>,
 }
 
 /// How a full evaluation failed.
@@ -1056,12 +1130,47 @@ impl<'a, P: ResidualProblem<N>, const N: usize> SystemSource<N> for ResidualSour
             }));
         }
 
+        // Square-root form of the SAME system: data rows as given, plus
+        // the prior as appended rows. A Cholesky of P0^-1 = L L^T makes
+        // the prior penalty (x-m)^T P0^-1 (x-m) equal to ||L^T (x-m)||^2,
+        // so L^T rows with residual L^T(x-m) reproduce it exactly — the
+        // prior enters the factorization instead of being added to a
+        // squared matrix.
+        let ls_rows = {
+            let mut rows = eval.jacobian.clone();
+            let mut b: Vec<f64> = eval.residuals.iter().map(|r| -r).collect();
+            let mut ok = true;
+            if let Some(p) = &self.prior {
+                match mat_cholesky(&p.covariance_inv) {
+                    Some(l) => {
+                        for i in 0..N {
+                            // Row i of L^T is column i of L.
+                            let mut row = [0.0_f64; N];
+                            for j in 0..N {
+                                row[j] = l[j][i];
+                            }
+                            let resid: f64 = (0..N).map(|j| row[j] * (x[j] - p.mean[j])).sum();
+                            rows.push(row);
+                            b.push(-resid);
+                        }
+                    }
+                    // A prior whose inverse covariance will not factor
+                    // cannot be expressed as rows. Withhold the
+                    // square-root system rather than silently drop the
+                    // prior from the step.
+                    None => ok = false,
+                }
+            }
+            ok.then_some((rows, b))
+        };
+
         Ok(AssembledSystem {
             cost,
             data_cost,
             normal,
             rhs,
             jacobian: Some(eval.jacobian),
+            ls_rows,
         })
     }
 
@@ -1150,6 +1259,7 @@ impl<'a, P: SystemProblem<N>, const N: usize> SystemSource<N> for DirectSource<'
             normal: mat_symmetrize(&sys.normal),
             rhs: sys.rhs,
             jacobian: None,
+            ls_rows: None,
         })
     }
 
@@ -1477,6 +1587,56 @@ fn solve_damped<const N: usize>(
 /// \\(\Phi = \sum r^2\\)). Valid for arbitrary steps; the exact-step
 /// shortcut \\(\mathbf{h}^\top(\mu D^2 \mathbf{h} + \mathbf{g})\\) is
 /// not used because clamps invalidate it.
+/// Predicted reduction computed from the least-squares ROWS rather than from
+/// \\(A\\) and \\(g\\).
+///
+/// Algebraically identical to [`predicted_reduction`]:
+/// \\(2h^\top g - h^\top A h = -2 r^\top J h - \lVert Jh \rVert^2\\)
+/// when \\(A = J^\top J\\) and \\(g = -J^\top r\\). Numerically it is not the
+/// same thing at all — it never touches the squared matrix, so it stays
+/// meaningful at a condition number where \\(h^\top A h\\) has lost every
+/// significant digit.
+///
+/// This matters because the gain ratio decides acceptance. A step computed
+/// stably against a predicted reduction computed unstably is rejected on
+/// noise, and the damping escalates until it is exhausted — which is the
+/// failure this exists to remove.
+///
+/// `rows` and `b` are the stacked system with \\(b = -r\\).
+/// The exact second-order correction to a predicted reduction:
+/// \\(h^\top S h = \sum_i r_i (h^\top \nabla^2 r_i h)\\), with
+/// \\(S = \sum_i r_i \nabla^2 r_i\\) the part of the least-squares Hessian
+/// Gauss-Newton drops.
+///
+/// `w` is the second directional derivative of the residual vector along
+/// \\(h\\) — \\((h^\top \nabla^2 r_i h)_i\\) — and `b` is the least-squares
+/// right-hand side, \\(b = -r\\). So
+/// \\(h^\top S h = \sum_i r_i w_i = -\sum_i b_i w_i\\), and the corrected
+/// model reduction is \\(\text{pred} - h^\top S h = \text{pred} + \sum_i b_i w_i\\).
+///
+/// `None` on a length mismatch — a partial correction would be worse than
+/// none, since it would silently apply curvature from some residuals and
+/// not others.
+fn second_order_correction(w: &[f64], b: &[f64]) -> Option<f64> {
+    if w.len() != b.len() {
+        return None;
+    }
+    Some(w.iter().zip(b).map(|(w_i, b_i)| w_i * b_i).sum())
+}
+
+fn predicted_reduction_rows<const N: usize>(h: &[f64; N], rows: &[[f64; N]], b: &[f64]) -> f64 {
+    let mut acc = 0.0_f64;
+    for (row, b_i) in rows.iter().zip(b) {
+        let mut jh = 0.0_f64;
+        for j in 0..N {
+            jh += row[j] * h[j];
+        }
+        // b = -r, so -2 r (Jh) = 2 b (Jh).
+        acc += 2.0 * b_i * jh - jh * jh;
+    }
+    acc
+}
+
 fn predicted_reduction<const N: usize>(
     h: &[f64; N],
     normal: &[[f64; N]; N],
@@ -1701,8 +1861,15 @@ fn convergence_reason<const N: usize>(
     {
         let threshold = config.ftol * acc.prev_cost;
         let ratio_ok = acc.pred > 0.0 && acc.actred <= 2.0 * acc.pred;
-        let gn_exhausted =
-            predicted_reduction(&h_gn, &sys.normal, &sys.rhs) <= config.ftol * sys.cost;
+        // Same rule as the acceptance sites: when the square-root system
+        // is available this must not be evaluated through A either, or the
+        // convergence test is decided on a quantity with no significant
+        // digits left at high row-weight dynamic range.
+        let gn_pred = match (config.square_root_solve, sys.ls_rows.as_ref()) {
+            (true, Some((rows, b))) => predicted_reduction_rows(&h_gn, rows, b),
+            _ => predicted_reduction(&h_gn, &sys.normal, &sys.rhs),
+        };
+        let gn_exhausted = gn_pred <= config.ftol * sys.cost;
         if acc.actred.abs() <= threshold && acc.pred <= threshold && ratio_ok && gn_exhausted {
             return Some(TerminationReason::CostTolerance);
         }
@@ -1884,8 +2051,56 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
         for _trial in 0..config.max_inner_trials {
             // One factorization serves the velocity and (geodesic)
             // acceleration solves at this μ.
-            let velocity = damped_factor(&sys.normal, &d, d_max, mu)
-                .and_then(|l| solve_with_factor(&l, &sys.rhs, &d, d_max).map(|h| (l, h)));
+            // Square-root path: factor [J D^-1 ; sqrt(mu) I] directly.
+            // Equilibration is the same D the Cholesky path uses, so the
+            // two solve the identical system — one by squaring it, one
+            // not. `factor` stays None here, which is what disables
+            // geodesic acceleration on this path.
+            let sqrt_step = if config.square_root_solve {
+                sys.ls_rows.as_ref().and_then(|(rows, b)| {
+                    let mut qr = crate::linalg::qr::QrAccumulator::<N>::new();
+                    for (row, rhs_i) in rows.iter().zip(b) {
+                        let mut scaled = [0.0_f64; N];
+                        for j in 0..N {
+                            scaled[j] = row[j] / effective_scale(d[j], d_max);
+                        }
+                        qr.push_row(&scaled, *rhs_i);
+                    }
+                    qr.push_damping(mu);
+                    let h = qr.solve().map(|h_scaled| {
+                        let mut h = [0.0_f64; N];
+                        for j in 0..N {
+                            h[j] = h_scaled[j] / effective_scale(d[j], d_max);
+                        }
+                        h
+                    })?;
+                    // R^T R equals the SCALED damped normal matrix, so R^T
+                    // is precisely the lower Cholesky factor
+                    // `solve_with_factor` expects — the Givens diagonal is
+                    // non-negative by construction (hypot). Handing it back
+                    // keeps geodesic acceleration alive on this path with no
+                    // squared matrix ever formed; without it the square-root
+                    // path silently disabled the one remedy the
+                    // narrow-canyon stall calls for.
+                    let r = qr.r();
+                    let mut l = [[0.0_f64; N]; N];
+                    for (i, row) in l.iter_mut().enumerate() {
+                        for (j, slot) in row.iter_mut().enumerate() {
+                            *slot = r[j][i];
+                        }
+                    }
+                    Some((l, h))
+                })
+            } else {
+                None
+            };
+
+            let velocity = if config.square_root_solve {
+                sqrt_step.map(|(l, h)| (Some(l), h))
+            } else {
+                damped_factor(&sys.normal, &d, d_max, mu)
+                    .and_then(|l| solve_with_factor(&l, &sys.rhs, &d, d_max).map(|h| (Some(l), h)))
+            };
             let Some((factor, h_natural)) = velocity else {
                 // Factorization failed or produced non-finite values:
                 // reject (raise μ) and retry — never bail, never fall
@@ -1922,9 +2137,28 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                         rhs_a[j] -= row[j] * w_i;
                     }
                 }
-                if let Some(a) = solve_with_factor(&factor, &rhs_a, &d, d_max) {
+                // Both paths supply a Cholesky factor of the damped
+                // system: the Cholesky path its L, the square-root path
+                // R^T, whose self-product is the scaled damped normal
+                // matrix.
+                if let Some(a) = factor
+                    .as_ref()
+                    .and_then(|l| solve_with_factor(l, &rhs_a, &d, d_max))
+                {
                     let v_norm = scaled_norm(&h_natural, &d);
                     let a_norm = scaled_norm(&a, &d);
+                    if std::env::var("HYPERJET_ACCEL_PROBE").is_ok() {
+                        eprintln!(
+                            "      ACCEL it={iteration} mu={mu:.3e} v={v_norm:.4e} a={a_norm:.4e} \
+                             ratio={:.3} verdict={}",
+                            a_norm / v_norm.max(1e-300),
+                            if a_norm <= config.avmax * v_norm {
+                                "APPLY"
+                            } else {
+                                "VETO"
+                            },
+                        );
+                    }
                     if a_norm <= config.avmax * v_norm {
                         for j in 0..N {
                             h[j] += 0.5 * a[j];
@@ -1965,9 +2199,27 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
             // (or NaN) still forces rejection — no blind division
             // anywhere.
             let pred = if clamped {
-                predicted_reduction(&h, &sys.normal, &sys.rhs)
+                {
+                    let gn = match (config.square_root_solve, sys.ls_rows.as_ref()) {
+                        (true, Some((rows, b))) => predicted_reduction_rows(&h, rows, b),
+                        _ => predicted_reduction(&h, &sys.normal, &sys.rhs),
+                    };
+                    // Fold in the exact curvature the Gauss-Newton model
+                    // omits. Declines to the GN model when the problem has
+                    // no second-derivative hook.
+                    match (config.exact_second_order_model, sys.ls_rows.as_ref()) {
+                        (true, Some((_, b))) => source
+                            .second_directional_derivative(&x, &h)
+                            .and_then(|w| second_order_correction(&w, b))
+                            .map_or(gn, |c| gn + c),
+                        _ => gn,
+                    }
+                }
             } else {
-                predicted_reduction(&h_natural, &sys.normal, &sys.rhs)
+                match (config.square_root_solve, sys.ls_rows.as_ref()) {
+                    (true, Some((rows, b))) => predicted_reduction_rows(&h_natural, rows, b),
+                    _ => predicted_reduction(&h_natural, &sys.normal, &sys.rhs),
+                }
             };
 
             let mut x_trial = [0.0_f64; N];
@@ -2574,6 +2826,151 @@ mod tests {
             ),
             "{err:?}"
         );
+    }
+
+    /// The exact second-order correction must reproduce the TRUE model
+    /// reduction on a large-residual problem, where the Gauss-Newton model
+    /// does not.
+    ///
+    /// Residuals r_i(x) = c_i - x^2 with c_i chosen so the fit cannot reach
+    /// zero: at the solution the residuals stay large, which is exactly the
+    /// regime where S = sum_i r_i grad^2 r_i stops being negligible. Here
+    /// grad^2 r_i = -2 for every i, so S = -2 * sum_i r_i is known in closed
+    /// form and the correction can be checked against arithmetic rather than
+    /// against another implementation.
+    #[test]
+    fn test_second_order_correction_matches_the_closed_form_s_term() {
+        // r_i = c_i - x^2, J_i = -2x, d2r_i/dx2 = -2.
+        let c = [1.0_f64, 4.0, 9.0];
+        let x = [1.5_f64];
+        let h = [0.25_f64];
+
+        let r: Vec<f64> = c.iter().map(|ci| ci - x[0] * x[0]).collect();
+        let b: Vec<f64> = r.iter().map(|ri| -ri).collect();
+        // Second directional derivative along h: h^T grad^2 r_i h = -2 h^2.
+        let w: Vec<f64> = c.iter().map(|_| -2.0 * h[0] * h[0]).collect();
+
+        let correction = second_order_correction(&w, &b).expect("lengths match");
+
+        // h^T S h = sum_i r_i * (h^T grad^2 r_i h), and the corrected model
+        // reduction is pred - h^T S h = pred + correction.
+        let hsh: f64 = r.iter().zip(&w).map(|(ri, wi)| ri * wi).sum();
+        assert!(
+            (correction + hsh).abs() < 1e-12,
+            "correction {correction} should be -(h^T S h) = {}",
+            -hsh
+        );
+
+        // And S is not negligible NEXT TO the Gauss-Newton term, which is the
+        // statement that matters: an absolute threshold would only measure the
+        // fixture's units. J_i = -2x for every row, so h^T J^T J h is exact
+        // arithmetic here too. If this ratio ever collapses, the fixture has
+        // stopped exercising the large-residual regime and the test is vacuous.
+        let jtj: f64 = c.iter().map(|_| 4.0 * x[0] * x[0]).sum();
+        let hjjh = jtj * h[0] * h[0];
+        assert!(
+            hsh.abs() / hjjh > 0.1,
+            "S contributes only {:.1}% of the Gauss-Newton term; the fixture is \
+             no longer large-residual",
+            100.0 * hsh.abs() / hjjh,
+        );
+    }
+
+    /// A length mismatch yields no correction rather than a partial one.
+    /// Applying curvature from some residuals and not others would be a
+    /// quietly wrong model, which is worse than the Gauss-Newton model it
+    /// was meant to improve.
+    #[test]
+    fn test_second_order_correction_refuses_a_partial_application() {
+        assert!(second_order_correction(&[1.0, 2.0], &[1.0]).is_none());
+    }
+
+    /// THE CASE THE SQUARE-ROOT PATH EXISTS FOR.
+    ///
+    /// A linear least-squares problem whose rows carry weights differing by
+    /// 1e7. The problem itself is well posed and exactly solvable — Van Loan
+    /// 1985 — but the normal matrix has condition number ~1e14 to 1e16, so
+    /// the Cholesky path either fails to converge or lands far from the
+    /// answer, while the QR path never squares anything and gets it.
+    ///
+    /// This is the shape of a joint optical + radar orbit fit, where
+    /// pre-weighted radar delay rows carry |J|/sigma five orders above
+    /// optical's.
+    #[test]
+    fn test_square_root_solve_survives_stiff_row_weights() {
+        const STIFF: f64 = 1.0e7;
+        // Exact solution [1, -2]. Two stiff rows and two ordinary ones,
+        // consistent, so the residual minimum is zero.
+        struct Stiff;
+        impl CostProblem<2> for Stiff {
+            type Error = std::convert::Infallible;
+            fn evaluate_cost(&mut self, x: &[f64; 2]) -> Result<f64, Self::Error> {
+                let r = Self::residuals(x);
+                Ok(r.iter().map(|v| v * v).sum())
+            }
+        }
+        impl Stiff {
+            fn residuals(x: &[f64; 2]) -> [f64; 4] {
+                [
+                    STIFF * (x[0] + x[1] - (-1.0)),
+                    STIFF * (x[0] - x[1] - 3.0),
+                    x[0] - 1.0,
+                    x[1] - (-2.0),
+                ]
+            }
+        }
+        impl ResidualProblem<2> for Stiff {
+            fn evaluate(&mut self, x: &[f64; 2]) -> Result<NLLSEvaluation<2>, Self::Error> {
+                let r = Self::residuals(x);
+                let jac = vec![[STIFF, STIFF], [STIFF, -STIFF], [1.0, 0.0], [0.0, 1.0]];
+                Ok(NLLSEvaluation {
+                    residuals: r.to_vec(),
+                    jacobian: jac,
+                    cost: r.iter().map(|v| v * v).sum(),
+                })
+            }
+        }
+
+        let solve_with = |square_root: bool| {
+            let config = LMConfig {
+                square_root_solve: square_root,
+                max_iterations: 100,
+                ..Default::default()
+            };
+            solve(&mut Stiff, [0.0, 0.0], &config, None)
+        };
+
+        let sqrt_sol = solve_with(true).expect("square-root path must solve");
+        let err_sqrt = (sqrt_sol.x[0] - 1.0).abs().max((sqrt_sol.x[1] + 2.0).abs());
+        assert!(
+            err_sqrt < 1e-6,
+            "square-root path landed at {:?}, want [1, -2] (err {err_sqrt:.3e})",
+            sqrt_sol.x,
+        );
+
+        // The control: the same problem through the normal equations. It is
+        // allowed to fail outright; what it must NOT do is quietly beat the
+        // square-root path, which would make this test vacuous.
+        let cholesky_err = solve_with(false)
+            .ok()
+            .map(|s| (s.x[0] - 1.0).abs().max((s.x[1] + 2.0).abs()));
+        match cholesky_err {
+            None => { /* failed outright — the motivating symptom */ }
+            Some(e) => assert!(
+                e >= err_sqrt,
+                "normal-equations path was MORE accurate ({e:.3e}) than the \
+                 square-root path ({err_sqrt:.3e}); this fixture no longer \
+                 exercises the conditioning difference it was written for"
+            ),
+        }
+    }
+
+    /// With the flag off, nothing moves. The square-root path is opt-in and
+    /// must leave every existing fit bit-identical.
+    #[test]
+    fn test_square_root_solve_is_inert_when_disabled() {
+        let off = LMConfig::default();
+        assert!(!off.square_root_solve, "must default off");
     }
 
     #[test]
@@ -3868,6 +4265,43 @@ mod tests {
             "acceleration must reduce cost evaluations: on={} off={}",
             on.n_cost_evals,
             off.n_cost_evals
+        );
+    }
+
+    /// Geodesic acceleration must survive the SQUARE-ROOT path.
+    ///
+    /// The acceleration solve reuses the Cholesky factor of the damped
+    /// system; the square-root path never forms one by squaring, so it
+    /// hands back R^T from the QR instead (R^T R = the scaled damped
+    /// normal matrix). This pins that the hand-off works end to end:
+    /// acceleration fires, is applied, and the solve converges to the
+    /// same answer — the regression here would be silent (acceleration
+    /// quietly declining on every trial), so the assertion is on the
+    /// applied-trial COUNT, not on convergence alone.
+    #[test]
+    fn test_geodesic_acceleration_fires_on_the_square_root_path() {
+        let mut cfg = config();
+        cfg.geodesic_acceleration = true;
+        cfg.square_root_solve = true;
+        cfg.max_iterations = 500;
+        let mut p = RosenbrockGeo {
+            hook_calls: std::cell::Cell::new(0),
+        };
+        let sol = solve(&mut p, [-1.2, 1.0], &cfg, None).unwrap();
+        assert!(sol.converged, "sqrt-path Rosenbrock must converge");
+        assert!(
+            (sol.x[0] - 1.0).abs() < 1e-6 && (sol.x[1] - 1.0).abs() < 1e-6,
+            "sqrt-path answer moved: {:?}",
+            sol.x
+        );
+        assert!(
+            p.hook_calls.get() > 0,
+            "second-derivative hook never exercised on the sqrt path"
+        );
+        assert!(
+            sol.n_accelerated_trials > 0,
+            "acceleration computed but never APPLIED on the sqrt path — the \
+             R^T Cholesky hand-off has regressed to silently declining"
         );
     }
 
