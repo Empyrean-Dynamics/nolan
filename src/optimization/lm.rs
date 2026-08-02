@@ -2147,6 +2147,18 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                 {
                     let v_norm = scaled_norm(&h_natural, &d);
                     let a_norm = scaled_norm(&a, &d);
+                    if std::env::var("HYPERJET_ACCEL_PROBE").is_ok() {
+                        eprintln!(
+                            "      ACCEL it={iteration} mu={mu:.3e} v={v_norm:.4e} a={a_norm:.4e} \
+                             ratio={:.3} verdict={}",
+                            a_norm / v_norm.max(1e-300),
+                            if a_norm <= config.avmax * v_norm {
+                                "APPLY"
+                            } else {
+                                "VETO"
+                            },
+                        );
+                    }
                     if a_norm <= config.avmax * v_norm {
                         for j in 0..N {
                             h[j] += 0.5 * a[j];
@@ -4253,6 +4265,43 @@ mod tests {
             "acceleration must reduce cost evaluations: on={} off={}",
             on.n_cost_evals,
             off.n_cost_evals
+        );
+    }
+
+    /// Geodesic acceleration must survive the SQUARE-ROOT path.
+    ///
+    /// The acceleration solve reuses the Cholesky factor of the damped
+    /// system; the square-root path never forms one by squaring, so it
+    /// hands back R^T from the QR instead (R^T R = the scaled damped
+    /// normal matrix). This pins that the hand-off works end to end:
+    /// acceleration fires, is applied, and the solve converges to the
+    /// same answer — the regression here would be silent (acceleration
+    /// quietly declining on every trial), so the assertion is on the
+    /// applied-trial COUNT, not on convergence alone.
+    #[test]
+    fn test_geodesic_acceleration_fires_on_the_square_root_path() {
+        let mut cfg = config();
+        cfg.geodesic_acceleration = true;
+        cfg.square_root_solve = true;
+        cfg.max_iterations = 500;
+        let mut p = RosenbrockGeo {
+            hook_calls: std::cell::Cell::new(0),
+        };
+        let sol = solve(&mut p, [-1.2, 1.0], &cfg, None).unwrap();
+        assert!(sol.converged, "sqrt-path Rosenbrock must converge");
+        assert!(
+            (sol.x[0] - 1.0).abs() < 1e-6 && (sol.x[1] - 1.0).abs() < 1e-6,
+            "sqrt-path answer moved: {:?}",
+            sol.x
+        );
+        assert!(
+            p.hook_calls.get() > 0,
+            "second-derivative hook never exercised on the sqrt path"
+        );
+        assert!(
+            sol.n_accelerated_trials > 0,
+            "acceleration computed but never APPLIED on the sqrt path — the \
+             R^T Cholesky hand-off has regressed to silently declining"
         );
     }
 
