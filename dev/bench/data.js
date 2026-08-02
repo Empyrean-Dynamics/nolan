@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785511596336,
+  "lastUpdate": 1785714178149,
   "repoUrl": "https://github.com/Empyrean-Dynamics/nolan",
   "entries": {
     "Nolan Benchmarks": [
@@ -12539,6 +12539,642 @@ window.BENCHMARK_DATA = {
             "name": "wrap_360_x64",
             "value": 234,
             "range": "± 1",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "moeyensj@users.noreply.github.com",
+            "name": "Joachim Moeyens",
+            "username": "moeyensj"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ea1f42b07deb1dc0cd1c9f78b7cb295e91b27cbf",
+          "message": "Square-root LM: factor the system, never form JtJ; exact second-order model; acceleration on the factored path (#30)\n\n* Add a square-root least-squares solver that never forms JtJ\n\nnolan's LM assembles the normal equations (A = JtJ, g = -Jtr) and factors\nA + mu*D^2 with Cholesky. Forming them squares the condition number,\nkappa(A^T A) = kappa(A)^2, which is fatal when row weights span orders of\nmagnitude.\n\nThat is not hypothetical. A joint optical + radar orbit fit mixes radar\ndelay at microsecond sigma with optical astrometry at arcsecond sigma;\nmeasured on the real Apophis arc the pre-weighted rows differ by five\norders in |J|/sigma (3.7e10 against 1e5). The Cholesky path terminates\nwith DampingExhausted at mu ~ 1e35, having overflowed the damped step to\ninfinity, while sitting a factor of five from converged on the UNDAMPED\nGauss-Newton step norm.\n\nThe literature is unambiguous and, importantly, encouraging: Van Loan 1985\nshows the weighted problem's sensitivity is bounded independently of the\nweight spread. High dynamic range is not intrinsically ill-conditioned —\nsquaring is what destroys it. So the fix belongs in the solver and NOT in\nthe weights, which matters here because radar out-weighing optical by four\nto five orders is exactly why radar collapses an uncertainty ellipsoid.\nDown-weighting it to help the solver would discard the signal.\n\nQrAccumulator triangularizes by Givens rotations, absorbing rows one at a\ntime into an N x N R and an N-vector Q^T b. The full M x N matrix is never\nstored and M never enters the working set. Two consequences beyond\nconditioning: R^T R = A^T A, so R is a square root of the normal matrix —\nwhat a square-root information filter carries in place of a covariance\n(Bierman 1977) — and appending rows is free, so LM damping enters as\nsqrt(mu) I extra rows rather than mu*D^2 added to a squared matrix, which\nis More's own formulation of the subproblem.\n\nGated on the failure mode rather than on agreement alone: a system whose\nrows differ by 1e8, which squares to kappa ~ 1e16, is solved to 1e-6; mu\nis swept to 1e60 and the step stays finite and monotonically shrinking\nwhere the squared form would have overflowed; R^T R is checked against\nA^T A; a rank-deficient system is refused rather than silently\npseudo-inverted.\n\nNot yet wired into the LM driver — that needs the prior term expressed as\nappended rows too (P0^-1 = L L^T contributes L^T rows), and is a behaviour\nchange to every fit, so it lands separately behind its own gate\n(empyrean-lgsp).\n\nCo-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>\n\n* Offer a square-root step and gain ratio that never touch JtJ\n\nWires the QR accumulator into the LM driver behind\nLMConfig::square_root_solve (default off, so every existing fit is\nbit-identical).\n\nTwo things move onto the factored form, and both had to:\n\n  - THE STEP. [J D^-1 ; sqrt(mu) I] is factored directly instead of\n    Cholesky-factoring D^-1 A D^-1 + mu I. Same equilibration, same\n    system, one squared and one not.\n  - THE GAIN RATIO. predicted_reduction_rows computes\n    2h'g - h'Ah as -2 r'(Jh) - ||Jh||^2 from the rows. Algebraically\n    identical, numerically not: it never touches the squared matrix.\n\nThe second is not optional, and measuring taught me that. With only the\nstep moved, the Apophis joint fit stopped overflowing — the damped step\nwent from inf to 1.88e-4 — but still exhausted damping, because a stably\ncomputed step was being judged by a predicted reduction evaluated through\na matrix with condition number ~1e16. A step computed well and scored on\nnoise is rejected, and mu escalates until it is exhausted.\n\nThe prior travels as rows too: P0^-1 = L L^T makes the penalty\n(x-m)' P0^-1 (x-m) equal ||L^T(x-m)||^2, so L^T rows with residual\nL^T(x-m) reproduce it exactly. If that Cholesky fails the square-root\nsystem is withheld entirely rather than silently solving a\nprior-free problem.\n\nGeodesic acceleration is unavailable on this path — it needs the Cholesky\nfactor of the damped normal matrix, which is never formed — and declines\nrather than mixing solvers to manufacture one.\n\nGated on a linear problem whose rows differ by 1e7, exactly solvable, so\nthe answer is known independently: the square-root path lands within 1e-6\nand the control is asserted not to beat it, which would mean the fixture\nhad stopped exercising the conditioning difference.\n\nHONEST LIMIT: this does not by itself fix the joint optical+radar fit it\nwas built for. That fit no longer produces an infinite step, but still\nterminates DampingExhausted at an undamped GN step norm ~1e-4 against a\n1e-5 tolerance. Conditioning was a real contributor and is now removed;\nit was not the whole cause.\n\nCo-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>\n\n* Judge convergence on the same square-root quantity the step is solved on\n\nThe CostTolerance test evaluated the undamped Gauss-Newton step's\npredicted gain through predicted_reduction(h_gn, A, g) — the squared\nmatrix — even with square_root_solve on. Two of the three call sites had\nmoved to the rows; this one had not, so a fit could compute its step and\nits gain ratio stably and then have convergence decided on a quantity with\nno significant digits left.\n\nFound by tracing the joint optical+radar fit rather than by reading: the\ndescent is textbook, rho = 1.0000 for fourteen consecutive iterations\nwhile the cost falls 1.84e12 -> 1.12e4, which is what exact AD Jacobians\nbuy — the quadratic model is essentially exact. Convergence is then denied\nat the floor.\n\nCo-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>\n\n* Correct the predicted reduction with the exact second-order term\n\nGauss-Newton approximates the least-squares Hessian J'J + S by J'J,\ndropping S = sum_i r_i grad^2 r_i. That is harmless only when the residuals\nbecome small at the solution.\n\nOn a large-residual fit it is not, and the failure has a specific shape:\nnear the floor J'r -> 0, so the LINEARIZED problem reports itself\nstationary and the predicted reduction collapses, while the true objective\n— whose curvature includes S — still has descent available. The gain ratio\nthen runs to hundreds and the rho <= 2 consistency guard refuses\nconvergence. Measured on a joint optical + radar orbit fit at\nchi2/nu ~ 13: rho went 0.99, 65, 297, 1061 over four iterations after\nfourteen at exactly 1.0000.\n\nNL2SOL (Dennis, Gay & Welsch 1981) carries a SECANT approximation to S.\nThis does not approximate it. h'Sh = sum_i r_i (h' grad^2 r_i h) is a\nresidual-weighted second directional derivative along h — exactly what the\nexisting second_directional_derivative hook returns — so the correction is\nONE second-order evaluation per trial and S is never formed. Second-order\nderivatives were already in the engine; the model just was not using them.\n\nThis corrects the MODEL, not the step: the step still comes from the\nGauss-Newton system. What it fixes is the gain ratio measuring what it is\ndefined to measure, which every acceptance and convergence decision in LM\ndepends on.\n\nDeclines to the Gauss-Newton model when the problem has no second-derivative\nhook, and refuses a PARTIAL correction on a length mismatch — curvature from\nsome residuals and not others would be a quietly wrong model, worse than the\none it replaces.\n\nGated against closed-form arithmetic rather than another implementation: for\nr_i = c_i - x^2 the Hessian is exactly -2, so S is known by hand. The\nfixture also asserts S is a significant fraction of the Gauss-Newton term\nrather than merely nonzero, so it cannot silently stop exercising the\nlarge-residual regime.\n\nLMConfig::exact_second_order_model, default off.\n\nCo-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>\n\n* Keep geodesic acceleration alive on the square-root path via R-transpose\n\nThe square-root path returned no Cholesky factor, so geodesic acceleration\nsilently declined there — and the joint optical + radar fit turned out to be\nexactly the regime that correction exists for.\n\nThe stall, finally characterized from iterate traces rather than endpoints:\nradar delay at 0.25 us sigma against |J| ~ 3.7e4 s/AU makes the feasible\nvalley ~1 METER wide in the range direction, curving over a 16-year arc. A\nmoderately damped step overshoots the wall and is rejected; an extremely\ndamped step is too small to change the cost at f64 resolution, actred is\nexactly zero, and it is rejected too. mu escalates to exhaustion between\nthose two regimes. That is the narrow curved canyon of Transtrum & Sethna,\nand their remedy is the acceleration term this path had turned off.\n\nThe fix costs nothing: the QR's R satisfies R^T R = the SCALED damped\nnormal matrix — the Givens diagonal is non-negative by construction — so\nR^T IS the lower Cholesky factor solve_with_factor expects. Hand it back\nand the acceleration solve reuses it unchanged, still with no squared\nmatrix formed anywhere.\n\nMEASURED on the joint Apophis fit (scott, use_unified_observables): the fit\nconverges for the first time on the exact path — sigma_pos 1.666 km against\nthe surrogate's 1.657 km, with 76 directional propagations spent. Optical\nfits are untouched (identical traces, acceleration still pre-gated behind\ntwo consecutive rejections).\n\nNot parity yet, stated plainly: the exact arm converges to a DIFFERENT\nselection (173 vs 440 observations kept), lands at chi2/dof 1.044 vs 0.845,\ntakes the outward ladder where the surrogate does not, and spends 15x the\nwall clock. Convergence is established; route and selection parity are the\nopen questions now.\n\nCo-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>\n\n* Gate geodesic acceleration on the square-root path\n\nThe acceleration solve reuses the damped system's Cholesky factor, which\nthe square-root path supplies as R^T from the QR rather than by squaring.\nA regression there is silent — acceleration quietly declining on every\ntrial — so the gate asserts the applied-trial count, not convergence\nalone.\n\nCo-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>\n\n* Keep CITATION.cff in step with the 1.12.0 bump\n\nCI enforces Cargo.toml/CITATION.cff version agreement; the bump to 1.12.0\ntouched only the manifest.\n\nCo-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-08-02T16:23:18-07:00",
+          "tree_id": "10415470967f2312fdccd211cc82e338de006890",
+          "url": "https://github.com/Empyrean-Dynamics/nolan/commit/ea1f42b07deb1dc0cd1c9f78b7cb295e91b27cbf"
+        },
+        "date": 1785714177204,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "jet1_6_constant",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_constant",
+            "value": 20,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_constant",
+            "value": 64,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_variable",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_variable",
+            "value": 20,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_variable",
+            "value": 64,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_add",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_add",
+            "value": 41,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_add",
+            "value": 204,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul",
+            "value": 74,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul",
+            "value": 373,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_div",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_div",
+            "value": 93,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_div",
+            "value": 397,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul_scalar",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul_scalar",
+            "value": 31,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul_scalar",
+            "value": 136,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sin",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sin",
+            "value": 66,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sin",
+            "value": 278,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_cos",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_cos",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_cos",
+            "value": 269,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sqrt",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sqrt",
+            "value": 53,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sqrt",
+            "value": 260,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_powi_3",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_powi_3",
+            "value": 56,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_powi_3",
+            "value": 261,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_atan2",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_atan2",
+            "value": 121,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_atan2",
+            "value": 610,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_gravity_accel",
+            "value": 50,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_gravity_accel",
+            "value": 291,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_gravity_accel",
+            "value": 1961,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_add",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_add",
+            "value": 80,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_add",
+            "value": 573,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_mul",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_mul",
+            "value": 159,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_mul",
+            "value": 1050,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_sin",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_sin",
+            "value": 122,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_sin",
+            "value": 757,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_gravity_accel",
+            "value": 70,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_gravity_accel",
+            "value": 736,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_gravity_accel",
+            "value": 5390,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_extract_grad",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_extract_grad",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_extract_hess",
+            "value": 48,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_extract_hess",
+            "value": 133,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_extract_tens",
+            "value": 388,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_extract_tens",
+            "value": 1307,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_gravity_magnitude",
+            "value": 13,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate2_6_gravity_magnitude",
+            "value": 243,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate3_6_gravity_magnitude",
+            "value": 1613,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_3_gravity_accel",
+            "value": 50,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_first_gravity",
+            "value": 58,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_second_gravity",
+            "value": 293,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_third_gravity",
+            "value": 2633,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_f64",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_f64",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_f64",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_jet1_6",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_jet1_6",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_jet1_6",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_f64",
+            "value": 138,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_f64",
+            "value": 186,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_jet1_6",
+            "value": 933,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_jet1_6",
+            "value": 1401,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_f64",
+            "value": 321,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_f64",
+            "value": 538,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_jet1_9",
+            "value": 3553,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_jet1_9",
+            "value": 5905,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_6_f64",
+            "value": 442,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_9_f64",
+            "value": 1082,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_transpose_2x6",
+            "value": 5,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_2x2x6",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_6x2x6",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_ata_2x6",
+            "value": 20,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_vec_mul_2",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_det_6",
+            "value": 97,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_trace_cube_6",
+            "value": 268,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_frobenius_6x6",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_largest_singular_value_6",
+            "value": 3295,
+            "range": "± 187",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "condition_number_6",
+            "value": 13803,
+            "range": "± 143",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sym_eigenvalues_3",
+            "value": 76,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_symmetric_eigen_6",
+            "value": 2169,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nearest_psd_6",
+            "value": 2234,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "tikhonov_with_report_6",
+            "value": 12384,
+            "range": "± 278",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sample_statistics_6_n50",
+            "value": 397,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sigma_points_6",
+            "value": 201,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k3",
+            "value": 151,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k5",
+            "value": 199,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linspace_64",
+            "value": 120,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "logspace_64",
+            "value": 442,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linear_clamped_64",
+            "value": 13,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_pi_x64",
+            "value": 393,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_2pi_x64",
+            "value": 381,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_180_x64",
+            "value": 260,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_360_x64",
+            "value": 260,
+            "range": "± 13",
             "unit": "ns/iter"
           }
         ]
