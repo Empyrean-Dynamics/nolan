@@ -3350,12 +3350,24 @@ mod tests {
     /// problem from never having started.
     #[test]
     fn test_square_root_solve_accepts_a_rank_deficient_prior() {
-        // Precision 1 on x0, 0 on x1: "no information", not "invalid" —
-        // and `validate_prior` admits it (only a NEGATIVE diagonal is a
-        // defect).
+        // Information along ONE direction and none across it, and that
+        // direction is deliberately OFF-AXIS: P = w wᵀ for a unit w at
+        // 30°. `validate_prior` admits it (only a NEGATIVE diagonal is a
+        // defect) — a zero precision means "no information", not
+        // "invalid".
+        //
+        // The off-axis part is load-bearing. An axis-aligned prior like
+        // [[1,0],[0,0]] is symmetric under transposing its own
+        // eigenvector matrix, so it cannot distinguish rows built from
+        // \\(V\\)'s columns from rows built from its rows — the exact
+        // orientation error that would leave \\(S^\top S = V^\top \Lambda
+        // V\\) instead of \\(V \Lambda V^\top\\), producing finite,
+        // plausible, WRONG cross-terms. Anisotropy is what makes this
+        // test able to fail.
+        let (c, s) = (0.75_f64.sqrt(), 0.5_f64);
         let prior = NLLSPrior {
             mean: [0.0, 0.0],
-            covariance_inv: [[1.0, 0.0], [0.0, 0.0]],
+            covariance_inv: [[c * c, c * s], [c * s, s * s]],
         };
 
         let solve_with = |square_root: bool| {
@@ -4871,6 +4883,94 @@ mod tests {
             "acceleration computed but never APPLIED on the sqrt path — the \
              R^T Cholesky hand-off has regressed to silently declining"
         );
+    }
+
+    /// The factor the square-root path hands to the acceleration solve
+    /// must be the LOWER-triangular \\(R^\top\\), and solving through it
+    /// must reproduce the normal-equations solve exactly.
+    ///
+    /// # Why this is asserted numerically and not through a fit
+    ///
+    /// [`solve_with_factor`] reads its argument as a lower-triangular
+    /// Cholesky factor: below-diagonal entries in the forward substitution,
+    /// above-diagonal in the back substitution. Hand it \\(R\\) instead of
+    /// \\(R^\top\\) and every below-diagonal read lands on a structural
+    /// zero, so the triangular solve silently degenerates into a DIAGONAL
+    /// one — a finite, plausible, wrong acceleration. Nothing throws.
+    ///
+    /// The end-to-end acceleration gate does not catch that: Levenberg-
+    /// Marquardt is robust to a poor acceleration, because the velocity
+    /// step dominates and the gain-ratio test rejects the trials the
+    /// correction spoils. The solve still converges and
+    /// `n_accelerated_trials` is still positive. Only a direct comparison
+    /// against the other path's solve can see it, so that is what this
+    /// does — one damped system, both routes to \\(a\\), asserted equal.
+    #[test]
+    fn test_square_root_factor_reproduces_the_cholesky_solve() {
+        const N: usize = 4;
+        // A system with genuinely coupled columns, so a degenerate
+        // "diagonal only" solve cannot coincidentally agree.
+        let rows: Vec<[f64; N]> = vec![
+            [1.0, 0.5, -0.25, 0.125],
+            [0.0, 2.0, 0.75, -0.5],
+            [-1.5, 0.25, 3.0, 1.0],
+            [0.5, -1.0, 0.5, 2.5],
+            [2.0, 1.0, -1.0, 0.25],
+        ];
+        let rhs = [1.0_f64, -2.0, 0.5, 3.0, -1.5];
+
+        let mut normal = [[0.0_f64; N]; N];
+        let mut grad = [0.0_f64; N];
+        for (row, b_i) in rows.iter().zip(&rhs) {
+            for j in 0..N {
+                for k in 0..N {
+                    normal[j][k] += row[j] * row[k];
+                }
+                grad[j] += row[j] * b_i;
+            }
+        }
+        let normal = mat_symmetrize(&normal);
+        let mut d = [0.0_f64; N];
+        let d_max = update_scaling(&mut d, &normal);
+
+        // An arbitrary right-hand side standing in for the acceleration
+        // solve's -Jᵀ r''_vv, which has nothing to do with `grad`.
+        let rhs_a = [0.3_f64, -1.7, 2.2, 0.9];
+
+        for mu in [0.0_f64, 1e-3, 1.0, 1e6] {
+            let mut qr = crate::linalg::qr::QrAccumulator::<N>::new();
+            for (row, b_i) in rows.iter().zip(&rhs) {
+                let mut scaled = [0.0_f64; N];
+                for j in 0..N {
+                    scaled[j] = row[j] / effective_scale(d[j], d_max);
+                }
+                qr.push_row(&scaled, *b_i);
+            }
+            qr.push_damping(mu);
+
+            // The hand-off exactly as `solve_core` performs it.
+            let r = qr.r();
+            let mut l = [[0.0_f64; N]; N];
+            for (i, row) in l.iter_mut().enumerate() {
+                for (j, slot) in row.iter_mut().enumerate() {
+                    *slot = r[j][i];
+                }
+            }
+            let via_qr = solve_with_factor(&l, &rhs_a, &d, d_max).expect("R^T is a valid factor");
+            let via_cholesky =
+                solve_damped(&normal, &rhs_a, &d, d_max, mu).expect("damped system is definite");
+
+            for i in 0..N {
+                let scale = via_cholesky[i].abs().max(1e-12);
+                assert!(
+                    (via_qr[i] - via_cholesky[i]).abs() <= 1e-9 * scale,
+                    "mu {mu:.0e} component {i}: R^T route gave {} but the Cholesky route \
+                     gave {} — the factor handed to the acceleration solve is not R^T",
+                    via_qr[i],
+                    via_cholesky[i],
+                );
+            }
+        }
     }
 
     /// An untrustworthy expansion (huge curvature) trips the avmax
