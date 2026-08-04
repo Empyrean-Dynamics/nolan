@@ -419,6 +419,53 @@ pub trait CostProblem<const N: usize> {
         false
     }
 
+    /// Whether the system the driver most recently assembled describes
+    /// the problem's **own** objective rather than a stand-in for it.
+    ///
+    /// Default `true`: an ordinary problem evaluates one function and
+    /// every assembly is that function. A problem that answers
+    /// [`ResidualProblem::evaluate`] from a cached linearization —
+    /// serving \\(f(x_0) + J\,\delta x\\) instead of propagating — returns
+    /// `false` for as long as that is so.
+    ///
+    /// # What the driver does with it
+    ///
+    /// **An inexact system may not end the solve.** A convergence
+    /// criterion firing on one measures the stand-in's stationarity, and
+    /// a damping or inner-trial exhaustion on one measures the stand-in's
+    /// exhaustion; neither is a statement about the objective. On either,
+    /// the driver spends one re-assembly at the current point — the same
+    /// evaluation a [`refresh_model`](Self::refresh_model) declaration
+    /// buys, counted the same way — and then:
+    ///
+    /// * re-tests the convergence battery on what came back, latching
+    ///   only if a criterion fires there. So every
+    ///   \\(\texttt{converged} = \texttt{true}\\) verdict, and the
+    ///   \\(\mathbf{x}\\) it certifies, belongs to the objective and not
+    ///   to a linearization of it.
+    /// * on an exhaustion, discards the damping escalated against the
+    ///   stand-in (μ returns to its value at the last committed
+    ///   acceptance) and keeps iterating, so a stand-in the driver ran out
+    ///   of road on costs a re-anchoring rather than the solve.
+    ///
+    /// Termination stays guaranteed: a second exhaustion with no step
+    /// accepted between the two re-assemblies is the objective's own, and
+    /// ends the solve. And every [`LMSolution`] field read off the final
+    /// system — the covariance, the gradient norm, the returned
+    /// \\(q\\)-norm — is therefore computed on an exact assembly on every
+    /// exit path.
+    ///
+    /// # Contract
+    ///
+    /// Read immediately after an assembly, and must describe THAT
+    /// assembly. A problem that returns `false` must be able to produce an
+    /// exact assembly on the next call — the driver's re-assembly is not
+    /// optional, and a problem that served a second linearization there
+    /// would leave the driver with no way to terminate honestly.
+    fn assembly_is_exact(&self) -> bool {
+        true
+    }
+
     /// Directional second derivative of the pre-weighted residuals
     /// along `v` at `x`:
     /// \\(\mathbf{r}''_{vv} = d^2\mathbf{r}_w(\mathbf{x} +
@@ -838,6 +885,16 @@ pub enum LMError<E> {
         /// The domain error.
         source: E,
     },
+    /// The re-assembly forced by an inexact system came back inexact
+    /// too, so the driver has no exact system to judge and no way to
+    /// terminate honestly. See
+    /// [`assembly_is_exact`](CostProblem::assembly_is_exact) — a problem
+    /// that declares an assembly inexact must be able to produce an exact
+    /// one when the driver asks.
+    InexactAssemblyPersisted {
+        /// Outer iteration whose forced re-assembly stayed inexact.
+        iteration: usize,
+    },
     /// Non-finite value in a full evaluation the driver cannot retreat
     /// from: the **initial** one, or the re-assembly a
     /// [`refresh_model`](CostProblem::refresh_model) declaration
@@ -923,6 +980,12 @@ impl<E: std::fmt::Display> std::fmt::Display for LMError<E> {
             Self::ModelRefreshFailed { iteration, source } => write!(
                 f,
                 "re-assembly after a model refresh failed at iteration {iteration}: {source}"
+            ),
+            Self::InexactAssemblyPersisted { iteration } => write!(
+                f,
+                "the re-assembly forced at iteration {iteration} came back inexact: a problem \
+                 that declares an assembly inexact must be able to produce an exact one when \
+                 asked, or no verdict the driver reaches describes its objective"
             ),
             Self::InvalidEvaluation { iteration, defect } => {
                 write!(f, "invalid evaluation at iteration {iteration}: {defect:?}")
@@ -1043,6 +1106,7 @@ trait SystemSource<const N: usize> {
     fn accepted(&mut self, x: &[f64; N]);
     fn rejected(&mut self, x_trial: &[f64; N]);
     fn refresh_model(&mut self, x: &[f64; N]) -> bool;
+    fn assembly_is_exact(&self) -> bool;
     fn second_directional_derivative(&mut self, x: &[f64; N], v: &[f64; N]) -> Option<Vec<f64>>;
 }
 
@@ -1217,6 +1281,10 @@ impl<'a, P: ResidualProblem<N>, const N: usize> SystemSource<N> for ResidualSour
         self.problem.refresh_model(x)
     }
 
+    fn assembly_is_exact(&self) -> bool {
+        self.problem.assembly_is_exact()
+    }
+
     fn second_directional_derivative(&mut self, x: &[f64; N], v: &[f64; N]) -> Option<Vec<f64>> {
         self.problem.second_directional_derivative(x, v)
     }
@@ -1301,6 +1369,10 @@ impl<'a, P: SystemProblem<N>, const N: usize> SystemSource<N> for DirectSource<'
 
     fn refresh_model(&mut self, x: &[f64; N]) -> bool {
         self.problem.refresh_model(x)
+    }
+
+    fn assembly_is_exact(&self) -> bool {
+        self.problem.assembly_is_exact()
     }
 
     fn second_directional_derivative(&mut self, x: &[f64; N], v: &[f64; N]) -> Option<Vec<f64>> {
@@ -2037,6 +2109,16 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
         config.tau * m
     };
     let mut nu = 2.0_f64;
+    // μ as the last COMMITTED evaluation left it — the initial one, an
+    // acceptance, or a re-assembly. Read only by the inexact-system path
+    // (see [`CostProblem::assembly_is_exact`]): the escalation a driver
+    // spends failing to improve a stand-in describes the stand-in, and is
+    // discarded with it rather than inherited by the objective.
+    let mut mu_committed = mu;
+    // An exhaustion reached on an inexact system, carried to the top of
+    // the next iteration where the forced re-assembly happens. `Some`
+    // only while the system is inexact.
+    let mut deferred_exhaustion: Option<TerminationReason> = None;
 
     let mut last_accepted: Option<AcceptedStep> = None;
     // Survives a model refresh; `last_accepted` does not (see the
@@ -2062,9 +2144,22 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
         // Judged on the system the driver has been minimizing, with
         // the last accepted step's reductions available to the cost
         // test (they were measured against this same system).
-        if let Some(r) = convergence_reason(config, &x, &sys, &d, d_max, last_accepted.as_ref()) {
+        //
+        // A criterion firing on an INEXACT system is not a verdict: what
+        // it measured is the stationarity of the stand-in the problem
+        // served in place of its objective, and a stand-in anchored at a
+        // nearby point is stationary at its own minimizer by
+        // construction. It does end the walk over that stand-in — the
+        // re-assembly below is forced by it — but only the re-test on
+        // what comes back may latch. See
+        // [`CostProblem::assembly_is_exact`].
+        let fired = convergence_reason(config, &x, &sys, &d, d_max, last_accepted.as_ref());
+        let exact = source.assembly_is_exact();
+        if let Some(r) = &fired
+            && exact
+        {
             converged = true;
-            reason = r;
+            reason = r.clone();
             break 'outer;
         }
 
@@ -2078,7 +2173,22 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
         // after the convergence tests deliberately — the tests judge
         // the objective the driver was actually minimizing, and a
         // solve that terminates here spends no refresh evaluation.
-        if source.refresh_model(&x) {
+        //
+        // Three triggers, one re-assembly. The problem may DECLARE the
+        // refresh; or the driver forces it because the system it holds is
+        // inexact and has just run out of road on that stand-in — either
+        // by satisfying a convergence criterion (`fired`) or by
+        // exhausting damping / inner trials at the end of the previous
+        // iteration (`deferred_exhaustion`). A forced refresh is the same
+        // evaluation, counted the same way; what differs is only who
+        // asked for it.
+        debug_assert!(
+            deferred_exhaustion.is_none() || !exact,
+            "an exhaustion is deferred only on an inexact system, and nothing between the \
+             deferral and here assembles"
+        );
+        let forced = !exact && (fired.is_some() || deferred_exhaustion.is_some());
+        if forced || source.refresh_model(&x) {
             // The re-assembly below is a FULL evaluation (residuals +
             // Jacobian) that no trial counter sees and that
             // `max_iterations` does not bound — for a problem whose
@@ -2109,6 +2219,12 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                 }
                 Err(AssembleFailure::Hard(h)) => return Err(h.into_error(iteration)),
             };
+            // The whole point of a forced refresh is to obtain a system
+            // the driver may judge. A second stand-in here would leave it
+            // with none, and with no honest way to stop.
+            if !source.assembly_is_exact() {
+                return Err(LMError::InexactAssemblyPersisted { iteration });
+            }
             d_max = update_scaling(&mut d, &sys.normal);
             if d_max == 0.0 {
                 return Err(LMError::ZeroDampingDiagonal { iteration });
@@ -2147,6 +2263,18 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                 reason = r;
                 break 'outer;
             }
+
+            // The objective is not stationary here, so an exhaustion
+            // deferred from the previous iteration belonged to the
+            // stand-in — and so did the damping the driver escalated
+            // reaching it. Both are discarded with it: μ returns to what
+            // the last committed acceptance left, and the solve carries
+            // on against a system it can actually judge.
+            if deferred_exhaustion.take().is_some() {
+                mu = mu_committed;
+                nu = 2.0;
+            }
+            mu_committed = mu;
         }
 
         // A square-root solve needs a square-root SYSTEM. There is none on
@@ -2169,6 +2297,12 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
 
         // ── Inner trial loop: same system, escalating μ ──
         let mut accepted_this_iteration = false;
+        // Set when μ escalation reached its cap. Carried out of the loop
+        // rather than terminating from inside it, so that the ONE place
+        // below decides what an unimproved iteration means — which
+        // depends on whether the system it failed to improve was the
+        // problem's objective or a stand-in for it.
+        let mut exhausted: Option<TerminationReason> = None;
         for _trial in 0..config.max_inner_trials {
             // One factorization serves the velocity and (geodesic)
             // acceleration solves at this μ.
@@ -2228,8 +2362,8 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                 // back to a different solver.
                 n_rejected_trials += 1;
                 if let Some(r) = escalate_mu(&mut mu, &mut nu, config.mu_max) {
-                    reason = r;
-                    break 'outer;
+                    exhausted = Some(r);
+                    break;
                 }
                 continue;
             };
@@ -2292,8 +2426,8 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                         // spent).
                         n_rejected_trials += 1;
                         if let Some(r) = escalate_mu(&mut mu, &mut nu, config.mu_max) {
-                            reason = r;
-                            break 'outer;
+                            exhausted = Some(r);
+                            break;
                         }
                         continue;
                     }
@@ -2401,8 +2535,8 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                 }
                 source.rejected(&x_trial);
                 if let Some(r) = escalate_mu(&mut mu, &mut nu, config.mu_max) {
-                    reason = r;
-                    break 'outer;
+                    exhausted = Some(r);
+                    break;
                 }
                 continue;
             }
@@ -2460,6 +2594,7 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                     x = x_trial;
                     sys = new_sys;
                     accepted_this_iteration = true;
+                    mu_committed = mu;
                 }
                 Err(AssembleFailure::Hard(hard)) => {
                     // The trial never committed; discard its pending
@@ -2490,8 +2625,8 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                     }
                     source.rejected(&x_trial);
                     if let Some(r) = escalate_mu(&mut mu, &mut nu, config.mu_max) {
-                        reason = r;
-                        break 'outer;
+                        exhausted = Some(r);
+                        break;
                     }
                     continue;
                 }
@@ -2503,14 +2638,91 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
         }
 
         if !accepted_this_iteration {
-            reason = TerminationReason::InnerTrialsExhausted {
+            let stop = exhausted.unwrap_or(TerminationReason::InnerTrialsExhausted {
                 trials: config.max_inner_trials,
-            };
-            break 'outer;
+            });
+            // An INEXACT system may not end the solve either. What the
+            // driver ran out of road on is the stand-in the problem
+            // served, and "no step improves this linearization" is the
+            // expected end of a walk across one, not a statement about
+            // the objective. Defer the verdict to the top of the next
+            // iteration, where the forced re-assembly turns it into a
+            // question the objective can answer.
+            //
+            // This terminates. A system goes inexact only through an
+            // assembly at an accepted point, so an exhaustion carrying a
+            // stand-in had at least one acceptance behind it; and the
+            // re-assembly the deferral forces is exact, so an iteration
+            // that then exhausts without accepting anything stops right
+            // here on the next pass.
+            if source.assembly_is_exact() {
+                reason = stop;
+                break 'outer;
+            }
+            deferred_exhaustion = Some(stop);
+            continue 'outer;
         }
 
         // Running-max scaling update at the newly accepted system.
         d_max = update_scaling(&mut d, &sys.normal);
+    }
+
+    // Every stop the driver CHOOSES already leaves `sys` exact: a
+    // convergence verdict may only latch on one, and an exhaustion
+    // reached on a stand-in is deferred instead of taken. The iteration
+    // budget is the one stop it does not choose, so it is the one that
+    // can land mid-walk — and the covariance, the gradient norm and the
+    // returned q-norm below are all read off `sys`.
+    if !source.assembly_is_exact() {
+        n_model_refreshes += 1;
+        sys = match source.assemble(&x) {
+            Ok(s) => s,
+            Err(AssembleFailure::Domain(e)) => {
+                return Err(LMError::ModelRefreshFailed {
+                    iteration: iterations,
+                    source: e,
+                });
+            }
+            Err(AssembleFailure::NonFinite(defect)) => {
+                return Err(LMError::InvalidEvaluation {
+                    iteration: iterations,
+                    defect,
+                });
+            }
+            Err(AssembleFailure::SystemNonFinite(defect)) => {
+                return Err(LMError::InvalidSystem {
+                    iteration: iterations,
+                    defect,
+                });
+            }
+            Err(AssembleFailure::Hard(h)) => return Err(h.into_error(iterations)),
+        };
+        if !source.assembly_is_exact() {
+            return Err(LMError::InexactAssemblyPersisted {
+                iteration: iterations,
+            });
+        }
+        d_max = update_scaling(&mut d, &sys.normal);
+        if d_max == 0.0 {
+            return Err(LMError::ZeroDampingDiagonal {
+                iteration: iterations,
+            });
+        }
+        source.accepted(&x);
+        // A deferred exhaustion was already owed this re-assembly and the
+        // re-test that goes with it; the budget cut in between. Finish
+        // the operation rather than reporting the budget for a walk that
+        // had already ended — and rather than reporting a stall at a
+        // point the objective turns out to be stationary at.
+        if let Some(stop) = deferred_exhaustion.take() {
+            match convergence_reason(config, &x, &sys, &d, d_max, None) {
+                Some(r) => {
+                    converged = true;
+                    reason = r;
+                }
+                None => reason = stop,
+            }
+        }
     }
 
     // Final state: `sys` is the full evaluation at the returned `x` on
@@ -5543,6 +5755,290 @@ mod tests {
              None here reads as 'the start point was already stationary'",
         );
         assert!(q > 0.0, "qnorm = {q}");
+    }
+
+    // ── Inexact assemblies (served linearizations) ──
+
+    /// A problem that answers the FULL evaluation from a frozen
+    /// linearization whenever the driver has just trialled that exact
+    /// point, and from its objective otherwise.
+    ///
+    /// The objective is \\(r(x) = x^2 - 4\\) — genuinely curved, so a
+    /// linearization anchored at one point is stationary somewhere the
+    /// objective is not, which is the whole hazard. From \\(x_0 = 5\\)
+    /// the anchor's model has its root at \\(x = 2.9\\) while the
+    /// objective's is at \\(x = 2\\), and the two are far enough apart
+    /// that no tolerance can confuse them.
+    ///
+    /// The serve/don't-serve rule mirrors an orbit fit's: a served
+    /// assembly is only ever the REUSE of a trial the solver already
+    /// paid for at that point, so the re-assembly the driver forces at a
+    /// committed point — where no trial is staged — is exact by
+    /// construction.
+    struct ServedLinearization {
+        /// Where the frozen rows were measured.
+        anchor: f64,
+        /// The point whose trial cost was last answered from the anchor.
+        staged: Option<f64>,
+        /// Whether the most recent assembly was served.
+        served: bool,
+        /// `(x, served)` for every assembly, in order.
+        log: Vec<(f64, bool)>,
+        /// Report every assembly as exact — the control arm.
+        lie: bool,
+        /// Coefficient of the truncation allowance a served TRIAL cost
+        /// is inflated by, \(K\|x - a\|^2\). An orbit fit carries one
+        /// so that a step the linearization cannot vouch for is rejected
+        /// rather than taken; large enough, it is what dead-ends a walk.
+        allowance: f64,
+    }
+
+    impl ServedLinearization {
+        fn new() -> Self {
+            Self {
+                anchor: f64::NAN,
+                staged: None,
+                served: false,
+                log: Vec::new(),
+                lie: false,
+                allowance: 0.0,
+            }
+        }
+        fn residual(x: f64) -> f64 {
+            x * x - 4.0
+        }
+        fn jacobian(x: f64) -> f64 {
+            2.0 * x
+        }
+        /// The frozen model: \\(r(a) + J(a)\,(x - a)\\).
+        fn linearized(&self, x: f64) -> f64 {
+            Self::residual(self.anchor) + Self::jacobian(self.anchor) * (x - self.anchor)
+        }
+        fn served_assemblies(&self) -> usize {
+            self.log.iter().filter(|(_, s)| *s).count()
+        }
+        fn exact_assemblies(&self) -> usize {
+            self.log.iter().filter(|(_, s)| !*s).count()
+        }
+    }
+
+    impl CostProblem<1> for ServedLinearization {
+        type Error = TestError;
+        fn evaluate_cost(&mut self, x: &[f64; 1]) -> Result<f64, TestError> {
+            if self.anchor.is_nan() {
+                // Nothing frozen yet: the objective answers.
+                let r = Self::residual(x[0]);
+                return Ok(r * r);
+            }
+            self.staged = Some(x[0]);
+            let r = self.linearized(x[0]);
+            let d = x[0] - self.anchor;
+            Ok(r * r + self.allowance * d * d)
+        }
+        fn on_step_accepted(&mut self, _x: &[f64; 1]) {
+            self.staged = None;
+        }
+        fn on_step_rejected(&mut self, _x: &[f64; 1]) {
+            self.staged = None;
+        }
+        fn assembly_is_exact(&self) -> bool {
+            self.lie || !self.served
+        }
+    }
+
+    impl ResidualProblem<1> for ServedLinearization {
+        fn evaluate(&mut self, x: &[f64; 1]) -> Result<NLLSEvaluation<1>, TestError> {
+            if self.staged == Some(x[0]) {
+                // Reuse what the trial already answered: value from the
+                // frozen model, slope the frozen slope.
+                self.served = true;
+                self.log.push((x[0], true));
+                let r = self.linearized(x[0]);
+                return Ok(NLLSEvaluation {
+                    residuals: vec![r],
+                    jacobian: vec![[Self::jacobian(self.anchor)]],
+                    cost: r * r,
+                });
+            }
+            self.served = false;
+            self.anchor = x[0];
+            self.log.push((x[0], false));
+            let r = Self::residual(x[0]);
+            Ok(NLLSEvaluation {
+                residuals: vec![r],
+                jacobian: vec![[Self::jacobian(x[0])]],
+                cost: r * r,
+            })
+        }
+    }
+
+    /// THE guarantee: a convergence verdict may only latch on an exact
+    /// assembly, so the point a solve certifies is the OBJECTIVE's
+    /// stationary point and not a linearization's.
+    ///
+    /// The control arm is the same problem lying about the same
+    /// assemblies, and it lands 0.9 away — at the frozen model's own
+    /// root. That gap is what the hook buys; without it the driver
+    /// cannot tell the two apart, because on the served system every
+    /// convergence criterion is genuinely satisfied.
+    #[test]
+    fn test_convergence_never_latches_on_an_inexact_assembly() {
+        let mut honest = ServedLinearization::new();
+        let sol = solve(&mut honest, [5.0], &config(), None).unwrap();
+
+        assert!(sol.converged, "{:?}", sol.reason);
+        assert!(
+            (sol.x[0] - 2.0).abs() < 1e-6,
+            "converged at {} — the objective's root is 2",
+            sol.x[0]
+        );
+        assert!(
+            honest.served_assemblies() > 0,
+            "nothing was served, so the guard was never exercised"
+        );
+        assert!(
+            !honest.log.last().expect("assemblies were logged").1,
+            "the last assembly before the verdict was served"
+        );
+        assert!(
+            sol.n_model_refreshes > 0,
+            "no re-assembly was forced, so no walk was ever ended"
+        );
+
+        let mut lying = ServedLinearization::new();
+        lying.lie = true;
+        let fiction = solve(&mut lying, [5.0], &config(), None).unwrap();
+        assert!(fiction.converged, "{:?}", fiction.reason);
+        assert!(
+            (fiction.x[0] - 2.9).abs() < 1e-6,
+            "a problem that vouches for its linearization should land at ITS root (2.9), \
+             got {}",
+            fiction.x[0]
+        );
+    }
+
+    /// The default is `true`, so a problem that never mentions the hook
+    /// sees the driver it always saw: one assembly per accepted point,
+    /// no forced re-assemblies, and a verdict off the system it built.
+    #[test]
+    fn test_assembly_is_exact_defaults_to_true_and_forces_nothing() {
+        let mut p = Tracked::new(overshoot_rational);
+        let sol = solve(&mut p, [6.5], &config(), None).unwrap();
+        assert!(sol.converged, "{:?}", sol.reason);
+        assert_eq!(sol.n_model_refreshes, 0);
+    }
+
+    /// An exhaustion reached on a served system is a fact about the
+    /// SERVED system. With the truncation allowance turned up, the walk
+    /// across one anchor can only end that way: a couple of steps in,
+    /// the allowance outgrows the reduction the frozen model can still
+    /// promise, every further trial is rejected, and the driver runs out
+    /// of damping — all while the served residual is nowhere near zero,
+    /// so no convergence criterion can fire on it either.
+    ///
+    /// The driver must re-anchor and carry on. Reporting
+    /// `DampingExhausted` here would be reporting the stand-in's dead end
+    /// as the objective's, at a point 0.9 away from the objective's root.
+    #[test]
+    fn test_an_exhausted_stand_in_re_anchors_instead_of_ending_the_solve() {
+        let mut p = ServedLinearization::new();
+        p.allowance = 50.0;
+        // One accepted step per anchor is all the allowance permits, so
+        // the walk contracts by ~0.75 an iteration and needs a budget
+        // three times the default to certify. That IS the quasi-Newton
+        // trade this hook exists to make legible: cheap steps, more of
+        // them.
+        let mut cfg = config();
+        cfg.max_iterations = 300;
+        let sol = solve(&mut p, [5.0], &cfg, None).unwrap();
+
+        assert!(sol.converged, "{:?}", sol.reason);
+        assert!(
+            (sol.x[0] - 2.0).abs() < 1e-6,
+            "the objective's root is 2, the solve stopped at {}",
+            sol.x[0]
+        );
+        assert!(
+            p.served_assemblies() > 0 && p.exact_assemblies() > 1,
+            "served {} exact {} — the walk-then-re-anchor pattern never happened",
+            p.served_assemblies(),
+            p.exact_assemblies()
+        );
+        assert!(
+            sol.n_rejected_trials > 0,
+            "no trial was ever rejected, so no walk dead-ended"
+        );
+        assert!(sol.n_model_refreshes >= 2, "{}", sol.n_model_refreshes);
+    }
+
+    /// The iteration budget is the one stop the driver does not choose,
+    /// so it is the one that can land mid-walk — and every [`LMSolution`]
+    /// field a caller reads off the final system would then describe the
+    /// stand-in. That matters most where it is least visible: a consumer
+    /// scoring its stopping point in units of the fit's own covariance
+    /// (scott's converged-in-practice stall acceptance does exactly this)
+    /// would be dividing the linearization's q-norm by the
+    /// linearization's covariance, which is self-consistent and therefore
+    /// always small. Any walk endpoint would rubber-stamp.
+    ///
+    /// So the final re-assembly is not optional either. For
+    /// \\(r(x) = x^2 - 4\\) the exact system's undamped Gauss-Newton
+    /// q-norm has the closed form \\((x^2-4)^2\\), which the frozen model
+    /// at any other anchor does not reproduce — so this pins the number
+    /// and not merely the code path.
+    #[test]
+    fn test_the_returned_diagnostics_are_exact_even_out_of_budget() {
+        let mut p = ServedLinearization::new();
+        p.allowance = 50.0;
+        let mut cfg = config();
+        // Small enough that the budget runs out while a walk is in
+        // progress, which the 300-iteration arm above is chosen to avoid.
+        cfg.max_iterations = 12;
+        let sol = solve(&mut p, [5.0], &cfg, None).unwrap();
+
+        assert!(!sol.converged, "{:?}", sol.reason);
+        assert!(
+            !p.log.last().expect("assemblies were logged").1,
+            "the solve returned on a served assembly"
+        );
+        let x = sol.x[0];
+        let want = (x * x - 4.0) * (x * x - 4.0);
+        let got = sol.final_gn_qnorm.expect("a non-singular 1x1 system");
+        assert!(
+            (got - want).abs() <= 1e-12 * want.max(1e-12),
+            "final_gn_qnorm {got} is not the objective's {want} at x = {x}"
+        );
+    }
+
+    /// The forced re-assembly is not optional. A problem that serves a
+    /// second linearization there leaves the driver with no system it
+    /// may judge and no honest way to stop, and that must surface.
+    #[test]
+    fn test_a_permanently_inexact_assembly_surfaces() {
+        struct AlwaysServes;
+        impl CostProblem<1> for AlwaysServes {
+            type Error = TestError;
+            fn evaluate_cost(&mut self, x: &[f64; 1]) -> Result<f64, TestError> {
+                Ok((x[0] - 2.0) * (x[0] - 2.0))
+            }
+            fn assembly_is_exact(&self) -> bool {
+                false
+            }
+        }
+        impl ResidualProblem<1> for AlwaysServes {
+            fn evaluate(&mut self, x: &[f64; 1]) -> Result<NLLSEvaluation<1>, TestError> {
+                Ok(NLLSEvaluation {
+                    residuals: vec![x[0] - 2.0],
+                    jacobian: vec![[1.0]],
+                    cost: (x[0] - 2.0) * (x[0] - 2.0),
+                })
+            }
+        }
+        let err = solve(&mut AlwaysServes, [10.0], &config(), None).unwrap_err();
+        assert!(
+            matches!(err, LMError::InexactAssemblyPersisted { .. }),
+            "{err:?}"
+        );
     }
 
     // ── Reported step norms ──

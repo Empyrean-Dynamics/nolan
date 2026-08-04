@@ -351,8 +351,14 @@ directional second derivative — one single-parameter `Jet2`
 evaluation), driver-owned Bayesian priors entering both the normal
 equations and the compared costs, an explicit per-axis error taxonomy
 (covariance failure is carried in the solution as a `Result`, never
-fabricated zeros), and bit-deterministic fixed-order arithmetic with a
-golden-trace regression test.
+fabricated zeros), vouched-system termination
+(`CostProblem::assembly_is_exact` — a problem serving approximate
+assemblies, e.g. from a frozen linearization, declares which systems it
+vouches for, and the driver never ends a solve on one it does not: a
+criterion firing on an unvouched system forces a fresh assembly and
+re-tests, so every termination verdict rests on a real evaluation), and
+bit-deterministic fixed-order arithmetic with a golden-trace regression
+test.
 
 ## Statistics
 
