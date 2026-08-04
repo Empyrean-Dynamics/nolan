@@ -109,7 +109,7 @@
 // the index-based form keeps that order explicit.
 #![allow(clippy::needless_range_loop)]
 
-use crate::linalg::generic::{mat_cholesky, mat_inv, mat_symmetrize};
+use crate::linalg::generic::{mat_cholesky, mat_inv, mat_symmetric_eigen, mat_symmetrize};
 
 /// Result of evaluating the residual function at a point.
 ///
@@ -851,6 +851,24 @@ pub enum LMError<E> {
         /// What was non-finite.
         defect: EvaluationDefect,
     },
+    /// [`LMConfig::square_root_solve`] was requested, the problem is on
+    /// the residual path, and the assembled system carried no
+    /// least-squares rows.
+    ///
+    /// The only way a residual-path assembly withholds its rows is a
+    /// prior whose precision matrix cannot be written as \\(S^\top S\\)
+    /// — one with a genuinely negative eigenvalue, which is not a
+    /// precision matrix at all. Reported rather than absorbed: without
+    /// this the
+    /// step solve returns `None` on every trial, the driver reads that
+    /// as a rejection, and the solve terminates with
+    /// [`TerminationReason::DampingExhausted`] at enormous \\(\mu\\)
+    /// having never once evaluated the objective — a diagnosis that
+    /// points at the damping policy instead of at the prior.
+    SquareRootSystemUnavailable {
+        /// Outer iteration that could not build a step.
+        iteration: usize,
+    },
     /// `max_consecutive_invalid` consecutive trial evaluations failed
     /// (`Err`, non-finite, or rolled-back acceptances). The best
     /// visited (= current accepted) state is carried for triage.
@@ -909,6 +927,12 @@ impl<E: std::fmt::Display> std::fmt::Display for LMError<E> {
             Self::InvalidEvaluation { iteration, defect } => {
                 write!(f, "invalid evaluation at iteration {iteration}: {defect:?}")
             }
+            Self::SquareRootSystemUnavailable { iteration } => write!(
+                f,
+                "square-root solve requested but the assembled system carried no least-squares \
+                 rows at iteration {iteration}: the prior's precision matrix has no square root \
+                 S with S^T S = P0^-1, so the prior cannot enter the factorization"
+            ),
             Self::PersistentInvalidTrials {
                 iteration,
                 consecutive,
@@ -1141,23 +1165,19 @@ impl<'a, P: ResidualProblem<N>, const N: usize> SystemSource<N> for ResidualSour
             let mut b: Vec<f64> = eval.residuals.iter().map(|r| -r).collect();
             let mut ok = true;
             if let Some(p) = &self.prior {
-                match mat_cholesky(&p.covariance_inv) {
-                    Some(l) => {
-                        for i in 0..N {
-                            // Row i of L^T is column i of L.
-                            let mut row = [0.0_f64; N];
-                            for j in 0..N {
-                                row[j] = l[j][i];
-                            }
+                match prior_rows(&p.covariance_inv) {
+                    Some(factor) => {
+                        for row in factor {
                             let resid: f64 = (0..N).map(|j| row[j] * (x[j] - p.mean[j])).sum();
                             rows.push(row);
                             b.push(-resid);
                         }
                     }
-                    // A prior whose inverse covariance will not factor
-                    // cannot be expressed as rows. Withhold the
-                    // square-root system rather than silently drop the
-                    // prior from the step.
+                    // A precision matrix with a genuinely negative
+                    // eigenvalue is not a sum of squares in ANY basis,
+                    // so no set of rows reproduces its penalty.
+                    // Withhold rather than silently drop the prior from
+                    // the step; `solve_core` surfaces the withholding.
                     None => ok = false,
                 }
             }
@@ -1453,6 +1473,89 @@ fn validate_prior<E, const N: usize>(prior: &NLLSPrior<N>) -> Result<(), LMError
     }
     Ok(())
 }
+
+/// Rows \\(S\\) with \\(S^\top S = P_0^{-1}\\): the prior's contribution
+/// to the square-root system, so the penalty
+/// \\((\mathbf{x}-\mathbf{m})^\top P_0^{-1}(\mathbf{x}-\mathbf{m})\\)
+/// is reproduced exactly as \\(\lVert S(\mathbf{x}-\mathbf{m})\rVert^2\\)
+/// without the precision matrix ever being added to a squared matrix.
+///
+/// # Why this is not just a Cholesky
+///
+/// A **partial** prior — information on some components and none on the
+/// others — is a perfectly ordinary thing to want (a prior on position
+/// but not velocity, or on the non-gravitational parameters alone), and
+/// [`validate_prior`] admits it: a zero precision row means "no
+/// information", not "invalid". Its precision matrix is positive
+/// SEMI-definite, and a semi-definite matrix has no Cholesky factor —
+/// the diagonal hits zero and the factorization divides by it.
+///
+/// The normal-equations path never noticed, because it only ever ADDS
+/// \\(P_0^{-1}\\) to \\(A\\). The square-root path needs a factor, and a
+/// Cholesky-only construction silently withheld the entire square-root
+/// system for such a prior: every step solve then returned `None`, the
+/// driver read that as a trial rejection, and μ escalated to
+/// `DampingExhausted` without the objective ever being evaluated once
+/// (empyrean-wv13f).
+///
+/// The symmetric eigendecomposition has no such gap:
+/// \\(P_0^{-1} = V\Lambda V^\top\\) gives rows
+/// \\(\sqrt{\lambda_k}\,\mathbf{v}_k^\top\\) over the positive
+/// eigenvalues, which reproduce the penalty exactly and simply contribute
+/// nothing along the unconstrained directions. Cholesky is still tried
+/// first: it is cheaper, and it keeps every positive-definite prior
+/// bit-for-bit on the rows it already produced.
+///
+/// Every positive eigenvalue contributes a row, however small: a weakly
+/// informative direction is still information, and dropping it below some
+/// threshold would quietly discard part of the prior. Only an exact zero
+/// contributes nothing. `None` is reserved for a precision matrix with a
+/// genuinely negative eigenvalue — one more than [`PRIOR_EIG_REL_TOL`]
+/// below zero relative to the largest, so the rounding dust of an
+/// inverted covariance does not trip it. Such a matrix is not a precision
+/// matrix at all and is not a sum of squares in any basis, so no set of
+/// rows can represent it.
+fn prior_rows<const N: usize>(covariance_inv: &[[f64; N]; N]) -> Option<Vec<[f64; N]>> {
+    if let Some(l) = mat_cholesky(covariance_inv) {
+        // Row i of L^T is column i of L.
+        return Some(
+            (0..N)
+                .map(|i| {
+                    let mut row = [0.0_f64; N];
+                    for (j, slot) in row.iter_mut().enumerate() {
+                        *slot = l[j][i];
+                    }
+                    row
+                })
+                .collect(),
+        );
+    }
+
+    let (eigenvalues, vectors) = mat_symmetric_eigen(covariance_inv)?;
+    let scale = eigenvalues.iter().fold(0.0_f64, |m, e| m.max(e.abs()));
+    let floor = -PRIOR_EIG_REL_TOL * scale;
+    let mut rows = Vec::with_capacity(N);
+    for (k, &lambda) in eigenvalues.iter().enumerate() {
+        if lambda < floor {
+            return None;
+        }
+        if lambda <= 0.0 {
+            continue;
+        }
+        let root = lambda.sqrt();
+        let mut row = [0.0_f64; N];
+        for (j, slot) in row.iter_mut().enumerate() {
+            *slot = root * vectors[j][k];
+        }
+        rows.push(row);
+    }
+    Some(rows)
+}
+
+/// Relative floor below which a negative eigenvalue of a precision
+/// matrix is rounding dust from inverting a covariance rather than a
+/// genuinely indefinite prior.
+const PRIOR_EIG_REL_TOL: f64 = 1e-12;
 
 // ── Numerics helpers (fixed-order, deterministic) ───────────────────
 
@@ -2046,6 +2149,24 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
             }
         }
 
+        // A square-root solve needs a square-root SYSTEM. There is none on
+        // the normal-equations entry point ([`solve_system`]), whose caller
+        // hands the driver \\(A\\) and \\(g\\) already formed — nothing was
+        // squared, so there is nothing for the flag to avoid and it is
+        // inert there, as documented.
+        //
+        // A RESIDUAL-path assembly that withheld its rows is the opposite
+        // case, and absorbing it is what made this worth writing down:
+        // every trial's step solve then returns `None`, the driver reads
+        // each one as a rejection, and the solve ends at
+        // `DampingExhausted` with μ ≈ 1e33 at its own start point, having
+        // never evaluated the objective once. A step-solver outage wearing
+        // a damping failure's clothes (empyrean-wv13f). Surface it.
+        let square_root = config.square_root_solve && sys.ls_rows.is_some();
+        if config.square_root_solve && sys.ls_rows.is_none() && sys.jacobian.is_some() {
+            return Err(LMError::SquareRootSystemUnavailable { iteration });
+        }
+
         // ── Inner trial loop: same system, escalating μ ──
         let mut accepted_this_iteration = false;
         for _trial in 0..config.max_inner_trials {
@@ -2056,7 +2177,7 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
             // two solve the identical system — one by squaring it, one
             // not. `factor` stays None here, which is what disables
             // geodesic acceleration on this path.
-            let sqrt_step = if config.square_root_solve {
+            let sqrt_step = if square_root {
                 sys.ls_rows.as_ref().and_then(|(rows, b)| {
                     let mut qr = crate::linalg::qr::QrAccumulator::<N>::new();
                     for (row, rhs_i) in rows.iter().zip(b) {
@@ -2095,7 +2216,7 @@ fn solve_core<S: SystemSource<N>, const N: usize>(
                 None
             };
 
-            let velocity = if config.square_root_solve {
+            let velocity = if square_root {
                 sqrt_step.map(|(l, h)| (Some(l), h))
             } else {
                 damped_factor(&sys.normal, &d, d_max, mu)
@@ -2971,6 +3092,465 @@ mod tests {
     fn test_square_root_solve_is_inert_when_disabled() {
         let off = LMConfig::default();
         assert!(!off.square_root_solve, "must default off");
+    }
+
+    /// Streaming 19,040 rows through the Givens QR must not accumulate
+    /// error, and the damped factorization must stay a true factorization
+    /// all the way to \\(\mu = 10^{35}\\).
+    ///
+    /// # Why this size and why this shape
+    ///
+    /// The square-root path was gated on 3-row systems. When a production
+    /// orbit fit then stalled — 9,520 optical observations over a
+    /// 6,276-day arc, two rows each, damping escalated to
+    /// \\(\mu \approx 10^{35}\\), `DampingExhausted` — the leading
+    /// hypothesis was accumulated rotation error over those 19,040 rows
+    /// (empyrean-wv13f). It was not: measured on the real assembled
+    /// system, \\(R^\top R\\) reproduced the scaled damped normal matrix
+    /// to 1.4e-14 relative at every \\(\mu\\) from 0 to \\(10^{40}\\), and
+    /// the two step solves agreed to 1e-13. This pins that, so the
+    /// hypothesis cannot come back.
+    ///
+    /// The system is consistent with a KNOWN exact solution, so accuracy
+    /// is measured against arithmetic rather than against the other
+    /// solver.
+    ///
+    /// # What makes a stiff fixture stiff
+    ///
+    /// Worth stating, because two earlier drafts of this fixture were
+    /// vacuous. Neither column-scale spread nor row-weight spread survives
+    /// the Moré equilibration \\(B = D^{-1} A D^{-1}\\) that BOTH paths
+    /// already apply: eight decades of column units gave
+    /// \\(\kappa(A) = 10^{16}\\) and \\(\kappa(B) = 1.05\\), and the
+    /// Cholesky path solved it more accurately than the QR. Equilibration
+    /// normalizes each column by its own scale, so any stiffness that is
+    /// only a choice of units is gone before either solver runs.
+    ///
+    /// What equilibration cannot remove is near-COLLINEARITY: two
+    /// parameters the data separates only through a part-per-million
+    /// difference. That is the shape an orbit fit really has — the
+    /// along-track and non-gravitational directions are distinguished by a
+    /// small residue on top of a large common signal — and it is the case
+    /// where squaring genuinely destroys the answer. Here it leaves
+    /// \\(\kappa(B) = 4.0\times 10^{12}\\): the QR returns the exact
+    /// solution to 1.1e-10 while the Cholesky path reaches only 4.3e-3,
+    /// seven orders apart.
+    #[test]
+    fn test_square_root_solve_streams_a_production_scale_system() {
+        const M: usize = 19_040;
+        const N: usize = 6;
+        // Two nearly parallel columns: the data separates the last two
+        // parameters only through a part-per-SEPARATION difference, so the
+        // information distinguishing them is a small residue on top of a
+        // large common component. Squaring squares that residue.
+        const SEPARATION: f64 = 1e-6;
+        let exact = [2.0_f64, -3.0, 0.5, 7.0, -1.25, 4.0];
+
+        // Deterministic, dependency-free row generator (xorshift64).
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut uniform = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1_u64 << 53) as f64 - 0.5
+        };
+        let mut rows = Vec::with_capacity(M);
+        let mut rhs = Vec::with_capacity(M);
+        for _ in 0..M {
+            let mut row = [0.0_f64; N];
+            for slot in row.iter_mut() {
+                *slot = uniform();
+            }
+            row[N - 1] = row[N - 2] + SEPARATION * uniform();
+            let b: f64 = (0..N).map(|j| row[j] * exact[j]).sum();
+            rows.push(row);
+            rhs.push(b);
+        }
+
+        // The undamped solve must return the exact solution. Column
+        // equilibration is what the driver applies, so apply it here too.
+        let mut normal = [[0.0_f64; N]; N];
+        let mut grad = [0.0_f64; N];
+        for (row, b_i) in rows.iter().zip(&rhs) {
+            for j in 0..N {
+                for k in 0..N {
+                    normal[j][k] += row[j] * row[k];
+                }
+                grad[j] += row[j] * b_i;
+            }
+        }
+        let normal = mat_symmetrize(&normal);
+        let mut d = [0.0_f64; N];
+        let d_max = update_scaling(&mut d, &normal);
+
+        use crate::linalg::qr::QrAccumulator;
+        let factored = |mu: f64| -> Option<(QrAccumulator<N>, [f64; N])> {
+            let mut qr = QrAccumulator::<N>::new();
+            for (row, b_i) in rows.iter().zip(&rhs) {
+                let mut scaled = [0.0_f64; N];
+                for j in 0..N {
+                    scaled[j] = row[j] / effective_scale(d[j], d_max);
+                }
+                qr.push_row(&scaled, *b_i);
+            }
+            qr.push_damping(mu);
+            let h = qr.solve().map(|hs| {
+                let mut h = [0.0_f64; N];
+                for j in 0..N {
+                    h[j] = hs[j] / effective_scale(d[j], d_max);
+                }
+                h
+            })?;
+            Some((qr, h))
+        };
+
+        // State the conditioning the gate actually runs at, AFTER the
+        // equilibration both paths apply — the only conditioning number
+        // that means anything here. Without this a future edit could
+        // quietly turn the fixture benign and every tolerance below would
+        // stop measuring anything.
+        let mut equilibrated = [[0.0_f64; N]; N];
+        for i in 0..N {
+            for j in 0..N {
+                equilibrated[i][j] =
+                    normal[i][j] / (effective_scale(d[i], d_max) * effective_scale(d[j], d_max));
+            }
+        }
+        let (eigenvalues, _) = mat_symmetric_eigen(&equilibrated).expect("symmetric");
+        let lo = eigenvalues.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = eigenvalues.iter().copied().fold(0.0_f64, f64::max);
+        let kappa_b = hi / lo;
+        assert!(
+            kappa_b > 1e11,
+            "fixture drifted: kappa(D^-1 A D^-1) = {kappa_b:.3e}. Equilibration has \
+             absorbed the weighting, so forming the normal equations no longer costs \
+             anything and this gate is vacuous"
+        );
+
+        let (_, h) = factored(0.0).expect("the undamped system is full rank");
+        let mut worst_sqrt = 0.0_f64;
+        for j in 0..N {
+            let err = (h[j] - exact[j]).abs() / exact[j].abs();
+            worst_sqrt = worst_sqrt.max(err);
+            assert!(
+                err < 1e-8,
+                "component {j} after {M} streamed rows: {} vs exact {} \
+                 (relative error {err:.3e}) — the Givens accumulation has drifted",
+                h[j],
+                exact[j],
+            );
+        }
+
+        // The control, and the reason the whole path exists: the same
+        // system through the normal equations. It may fail outright; what
+        // it must NOT do is match the square-root path, because then
+        // kappa(A) has drifted somewhere f64 can still cope with and the
+        // gate has stopped measuring anything.
+        let cholesky_worst = solve_damped(&normal, &grad, &d, d_max, 0.0).map(|h| {
+            (0..N).fold(0.0_f64, |m, j| {
+                m.max((h[j] - exact[j]).abs() / exact[j].abs())
+            })
+        });
+        match cholesky_worst {
+            None => { /* the factorization gave up — the motivating symptom */ }
+            Some(e) => assert!(
+                e > 1e3 * worst_sqrt,
+                "normal equations reached {e:.3e} against the square-root path's \
+                 {worst_sqrt:.3e}; at kappa(B) = {kappa_b:.3e} they should be \
+                 orders apart, so this fixture is no longer stiff"
+            ),
+        }
+
+        // R^T R must remain a factorization of the SCALED damped normal
+        // matrix at every damping, including where mu*I swamps the data
+        // entirely.
+        for mu in [0.0, 1.0, 1e8, 1e20, 1e35] {
+            let (qr, h) = factored(mu).expect("a damped system is always full rank");
+            assert!(
+                scaled_norm(&h, &d).is_finite(),
+                "mu {mu:.0e} produced a non-finite step {h:?}"
+            );
+            let r = qr.r();
+            for i in 0..N {
+                for j in 0..N {
+                    let rtr: f64 = (0..N).map(|k| r[k][i] * r[k][j]).sum();
+                    let want = normal[i][j]
+                        / (effective_scale(d[i], d_max) * effective_scale(d[j], d_max))
+                        + if i == j { mu } else { 0.0 };
+                    let err = (rtr - want).abs() / want.abs().max(1e-300);
+                    assert!(
+                        err < 1e-12,
+                        "mu {mu:.0e}: (R^T R)[{i}][{j}] = {rtr} != {want} \
+                         (relative {err:.3e})"
+                    );
+                }
+            }
+        }
+
+        // And the predicted reduction taken from the rows agrees with the
+        // one taken from A and g — the quantity the gain ratio divides by.
+        let (_, h) = factored(1.0).expect("damped");
+        let from_rows = predicted_reduction_rows(&h, &rows, &rhs);
+        let from_normal = predicted_reduction(&h, &normal, &grad);
+        assert!(
+            (from_rows - from_normal).abs() <= 1e-8 * from_normal.abs(),
+            "predicted reduction disagrees between the rows ({from_rows}) and \
+             the normal equations ({from_normal})"
+        );
+    }
+
+    /// A linear least-squares problem with a deliberately partial prior:
+    /// information on \\(x_0\\), none on \\(x_1\\).
+    struct PartialPrior;
+
+    impl PartialPrior {
+        fn residuals(x: &[f64; 2]) -> [f64; 3] {
+            [x[0] - 1.0, x[1] - 2.0, 0.5 * x[0] + 0.5 * x[1] - 1.5]
+        }
+        fn jacobian() -> Vec<[f64; 2]> {
+            vec![[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]]
+        }
+    }
+
+    impl CostProblem<2> for PartialPrior {
+        type Error = TestError;
+        fn evaluate_cost(&mut self, x: &[f64; 2]) -> Result<f64, TestError> {
+            Ok(Self::residuals(x).iter().map(|v| v * v).sum())
+        }
+    }
+
+    impl ResidualProblem<2> for PartialPrior {
+        fn evaluate(&mut self, x: &[f64; 2]) -> Result<NLLSEvaluation<2>, TestError> {
+            let r = Self::residuals(x);
+            Ok(NLLSEvaluation {
+                cost: r.iter().map(|v| v * v).sum(),
+                residuals: r.to_vec(),
+                jacobian: Self::jacobian(),
+            })
+        }
+    }
+
+    /// A PARTIAL prior — precision on one component, none on the other —
+    /// must solve the same on both paths.
+    ///
+    /// Such a precision matrix is positive SEMI-definite, and semi-definite
+    /// matrices have no Cholesky factor. The normal-equations path never
+    /// cared, because it only ever ADDS \\(P_0^{-1}\\) to \\(A\\); the
+    /// square-root path needs a factor, and a Cholesky-only construction
+    /// withheld the whole square-root system instead. The failure that
+    /// produced was not a visibly missing prior — it was every step solve
+    /// returning `None`, read as a trial rejection, μ escalating to
+    /// `DampingExhausted` at 1.3e33, and a solve reporting a damping
+    /// failure at its own start point with ZERO cost evaluations spent
+    /// (empyrean-wv13f).
+    ///
+    /// The assertion is therefore on agreement AND on the solve having
+    /// done work: an identical-to-the-Cholesky-path answer is the
+    /// statement, and `n_cost_evals > 0` is what distinguishes solving the
+    /// problem from never having started.
+    #[test]
+    fn test_square_root_solve_accepts_a_rank_deficient_prior() {
+        // Information along ONE direction and none across it, and that
+        // direction is deliberately OFF-AXIS: P = w wᵀ for a unit w at
+        // 30°. `validate_prior` admits it (only a NEGATIVE diagonal is a
+        // defect) — a zero precision means "no information", not
+        // "invalid".
+        //
+        // The off-axis part is load-bearing. An axis-aligned prior like
+        // [[1,0],[0,0]] is symmetric under transposing its own
+        // eigenvector matrix, so it cannot distinguish rows built from
+        // \\(V\\)'s columns from rows built from its rows — the exact
+        // orientation error that would leave \\(S^\top S = V^\top \Lambda
+        // V\\) instead of \\(V \Lambda V^\top\\), producing finite,
+        // plausible, WRONG cross-terms. Anisotropy is what makes this
+        // test able to fail.
+        let (c, s) = (0.75_f64.sqrt(), 0.5_f64);
+        let prior = NLLSPrior {
+            mean: [0.0, 0.0],
+            covariance_inv: [[c * c, c * s], [c * s, s * s]],
+        };
+
+        let solve_with = |square_root: bool| {
+            let cfg = LMConfig {
+                square_root_solve: square_root,
+                ..config()
+            };
+            let mut p = PartialPrior;
+            solve(&mut p, [5.0, -5.0], &cfg, Some(&prior)).expect("both paths must solve")
+        };
+
+        let ne = solve_with(false);
+        let sq = solve_with(true);
+
+        assert!(
+            sq.converged,
+            "square-root path did not converge on a semi-definite prior: {:?}",
+            sq.reason
+        );
+        assert!(
+            sq.n_cost_evals > 0,
+            "square-root path terminated without evaluating the objective once — \
+             the step solve is failing on every trial and μ escalation is wearing \
+             the blame"
+        );
+        for i in 0..2 {
+            assert!(
+                (sq.x[i] - ne.x[i]).abs() <= 1e-9 * ne.x[i].abs().max(1.0),
+                "component {i}: square-root {} vs normal equations {}",
+                sq.x[i],
+                ne.x[i]
+            );
+        }
+        // The prior is genuinely in the answer: without it the fit would
+        // sit at the unpenalized least-squares solution.
+        let mut unprior = PartialPrior;
+        let free = solve(&mut unprior, [5.0, -5.0], &config(), None).expect("unpriored solve");
+        assert!(
+            (sq.x[0] - free.x[0]).abs() > 1e-3,
+            "the prior left no trace on x0 ({} vs unpriored {}); the fixture has \
+             stopped testing that the prior rows are present at all",
+            sq.x[0],
+            free.x[0],
+        );
+    }
+
+    /// [`prior_rows`] returns a genuine square root: \\(S^\top S =
+    /// P_0^{-1}\\) exactly, definite or not, and in a basis the precision
+    /// matrix does not share with the coordinate axes.
+    #[test]
+    fn test_prior_rows_reproduce_the_precision_matrix() {
+        // Rank 2 of 3, off-axis: P = 4 u u^T + 1 v v^T with u, v
+        // orthonormal and neither an axis. The third direction carries no
+        // information at all.
+        let u = [0.6, 0.8, 0.0];
+        let v = [0.0, 0.0, 1.0];
+        let mut p = [[0.0_f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                p[i][j] = 4.0 * u[i] * u[j] + v[i] * v[j];
+            }
+        }
+        let rows = prior_rows(&p).expect("a semi-definite precision has a square root");
+        assert!(
+            rows.len() <= 3,
+            "at most one row per direction, got {rows:?}"
+        );
+        for i in 0..3 {
+            for j in 0..3 {
+                let sts: f64 = rows.iter().map(|r| r[i] * r[j]).sum();
+                assert!(
+                    (sts - p[i][j]).abs() < 1e-12,
+                    "S^T S [{i}][{j}] = {sts} != {}",
+                    p[i][j]
+                );
+            }
+        }
+        // The unconstrained direction carries no penalty: w = u × v is
+        // orthogonal to both, so ‖S w‖ must be at the eigensolver's noise
+        // floor and not at the scale of the prior itself.
+        let w = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
+        let sw: f64 = rows
+            .iter()
+            .map(|r| {
+                let d: f64 = (0..3).map(|j| r[j] * w[j]).sum();
+                d * d
+            })
+            .sum::<f64>()
+            .sqrt();
+        assert!(
+            sw < 1e-7,
+            "the unconstrained direction picked up a penalty ‖Sw‖ = {sw:.3e}"
+        );
+
+        // A precision that is already diagonal has an exact zero
+        // eigenvalue, and an exact zero contributes no row at all.
+        let axis = [[1.0_f64, 0.0], [0.0, 0.0]];
+        assert_eq!(
+            prior_rows(&axis).expect("semi-definite").len(),
+            1,
+            "an exactly-zero precision direction must contribute no row"
+        );
+
+        // A positive-definite precision still goes through the Cholesky,
+        // whose rows are exactly L^T — the pre-existing construction, kept
+        // bit-for-bit so no definite prior's fit moves.
+        let pd = [[4.0, 1.0], [1.0, 3.0]];
+        let l = mat_cholesky(&pd).expect("definite");
+        let rows = prior_rows(&pd).expect("definite");
+        assert_eq!(rows.len(), 2);
+        for i in 0..2 {
+            for j in 0..2 {
+                assert_eq!(rows[i][j], l[j][i], "row {i} col {j} is not L^T");
+            }
+        }
+    }
+
+    /// A precision matrix with a genuinely NEGATIVE eigenvalue is not a
+    /// precision matrix, and no set of rows reproduces its penalty — it is
+    /// not a sum of squares in any basis. The square-root path must SAY so.
+    ///
+    /// The behaviour being pinned is the diagnosis, not the refusal. Left
+    /// unreported, the same condition presents as
+    /// `DampingExhausted` at astronomical μ, which sends the reader to the
+    /// damping policy instead of to the prior.
+    #[test]
+    fn test_square_root_solve_reports_a_prior_it_cannot_factor() {
+        // Indefinite: eigenvalues 3 and -1, both diagonal entries
+        // positive, so `validate_prior` (which reads only the diagonal)
+        // admits it.
+        let prior = NLLSPrior {
+            mean: [0.0, 0.0],
+            covariance_inv: [[1.0, 2.0], [2.0, 1.0]],
+        };
+        let cfg = LMConfig {
+            square_root_solve: true,
+            ..config()
+        };
+        let mut p = PartialPrior;
+        let err = solve(&mut p, [5.0, -5.0], &cfg, Some(&prior))
+            .expect_err("an indefinite prior has no square-root form");
+        assert!(
+            matches!(err, LMError::SquareRootSystemUnavailable { .. }),
+            "expected the withheld square-root system to be named, got {err:?}"
+        );
+    }
+
+    /// `square_root_solve` on the normal-equations entry point is INERT,
+    /// as documented — not fatal.
+    ///
+    /// [`solve_system`] callers hand the driver \\(A\\) and \\(g\\)
+    /// directly, so there is no squaring left for a square-root solve to
+    /// avoid and no least-squares rows to factor. A consumer that sets the
+    /// flag once in a shared config and reaches this entry point must get
+    /// its fit, not a damping failure at its start point.
+    #[test]
+    fn test_square_root_solve_is_inert_on_the_system_path() {
+        let cfg = LMConfig {
+            square_root_solve: true,
+            ..config()
+        };
+        let mut p = QuadSystem {
+            q: [[2.0, 0.0], [0.0, 8.0]],
+            a: [1.0, 2.0],
+            c: 3.0,
+        };
+        let sol = solve_system(&mut p, [10.0, -4.0], &cfg).expect("system path must still solve");
+        assert!(
+            sol.converged,
+            "system path did not converge: {:?}",
+            sol.reason
+        );
+        assert!(
+            sol.n_cost_evals > 0,
+            "system path spent no cost evaluations — the square-root flag is \
+             fatal here rather than inert"
+        );
+        assert!((sol.x[0] - 1.0).abs() < 1e-8, "x0={}", sol.x[0]);
+        assert!((sol.x[1] - 2.0).abs() < 1e-8, "x1={}", sol.x[1]);
     }
 
     #[test]
@@ -4303,6 +4883,94 @@ mod tests {
             "acceleration computed but never APPLIED on the sqrt path — the \
              R^T Cholesky hand-off has regressed to silently declining"
         );
+    }
+
+    /// The factor the square-root path hands to the acceleration solve
+    /// must be the LOWER-triangular \\(R^\top\\), and solving through it
+    /// must reproduce the normal-equations solve exactly.
+    ///
+    /// # Why this is asserted numerically and not through a fit
+    ///
+    /// [`solve_with_factor`] reads its argument as a lower-triangular
+    /// Cholesky factor: below-diagonal entries in the forward substitution,
+    /// above-diagonal in the back substitution. Hand it \\(R\\) instead of
+    /// \\(R^\top\\) and every below-diagonal read lands on a structural
+    /// zero, so the triangular solve silently degenerates into a DIAGONAL
+    /// one — a finite, plausible, wrong acceleration. Nothing throws.
+    ///
+    /// The end-to-end acceleration gate does not catch that: Levenberg-
+    /// Marquardt is robust to a poor acceleration, because the velocity
+    /// step dominates and the gain-ratio test rejects the trials the
+    /// correction spoils. The solve still converges and
+    /// `n_accelerated_trials` is still positive. Only a direct comparison
+    /// against the other path's solve can see it, so that is what this
+    /// does — one damped system, both routes to \\(a\\), asserted equal.
+    #[test]
+    fn test_square_root_factor_reproduces_the_cholesky_solve() {
+        const N: usize = 4;
+        // A system with genuinely coupled columns, so a degenerate
+        // "diagonal only" solve cannot coincidentally agree.
+        let rows: Vec<[f64; N]> = vec![
+            [1.0, 0.5, -0.25, 0.125],
+            [0.0, 2.0, 0.75, -0.5],
+            [-1.5, 0.25, 3.0, 1.0],
+            [0.5, -1.0, 0.5, 2.5],
+            [2.0, 1.0, -1.0, 0.25],
+        ];
+        let rhs = [1.0_f64, -2.0, 0.5, 3.0, -1.5];
+
+        let mut normal = [[0.0_f64; N]; N];
+        let mut grad = [0.0_f64; N];
+        for (row, b_i) in rows.iter().zip(&rhs) {
+            for j in 0..N {
+                for k in 0..N {
+                    normal[j][k] += row[j] * row[k];
+                }
+                grad[j] += row[j] * b_i;
+            }
+        }
+        let normal = mat_symmetrize(&normal);
+        let mut d = [0.0_f64; N];
+        let d_max = update_scaling(&mut d, &normal);
+
+        // An arbitrary right-hand side standing in for the acceleration
+        // solve's -Jᵀ r''_vv, which has nothing to do with `grad`.
+        let rhs_a = [0.3_f64, -1.7, 2.2, 0.9];
+
+        for mu in [0.0_f64, 1e-3, 1.0, 1e6] {
+            let mut qr = crate::linalg::qr::QrAccumulator::<N>::new();
+            for (row, b_i) in rows.iter().zip(&rhs) {
+                let mut scaled = [0.0_f64; N];
+                for j in 0..N {
+                    scaled[j] = row[j] / effective_scale(d[j], d_max);
+                }
+                qr.push_row(&scaled, *b_i);
+            }
+            qr.push_damping(mu);
+
+            // The hand-off exactly as `solve_core` performs it.
+            let r = qr.r();
+            let mut l = [[0.0_f64; N]; N];
+            for (i, row) in l.iter_mut().enumerate() {
+                for (j, slot) in row.iter_mut().enumerate() {
+                    *slot = r[j][i];
+                }
+            }
+            let via_qr = solve_with_factor(&l, &rhs_a, &d, d_max).expect("R^T is a valid factor");
+            let via_cholesky =
+                solve_damped(&normal, &rhs_a, &d, d_max, mu).expect("damped system is definite");
+
+            for i in 0..N {
+                let scale = via_cholesky[i].abs().max(1e-12);
+                assert!(
+                    (via_qr[i] - via_cholesky[i]).abs() <= 1e-9 * scale,
+                    "mu {mu:.0e} component {i}: R^T route gave {} but the Cholesky route \
+                     gave {} — the factor handed to the acceleration solve is not R^T",
+                    via_qr[i],
+                    via_cholesky[i],
+                );
+            }
+        }
     }
 
     /// An untrustworthy expansion (huge curvature) trips the avmax
