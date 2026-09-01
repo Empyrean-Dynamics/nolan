@@ -398,7 +398,9 @@ let (mu_ut, cov_ut) =
 
 // Equal-weight Gaussian mixture decomposition along a chosen direction
 // (DeMars-style uniform spacing; preserves the mixture mean and
-// covariance for any K ≥ 1).
+// covariance for any K ≥ 1). The shared sub-covariance is deflated along
+// Σe rather than e, so every component stays PSD (Σ_k ⪰ Σ/K) even when
+// the split direction is far from an eigenvector of Σ.
 let components = split_gaussian::<6>(&mu, &cov, &direction, 3).unwrap();
 ```
 

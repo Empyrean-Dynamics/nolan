@@ -14,7 +14,7 @@
 //!   Kalman filter to nonlinear systems.* SPIE 3068: 182–193. (canonical
 //!   \\(2N+1\\) sigma-point construction used by [`sigma_points`])
 
-use crate::linalg::generic::{mat_cholesky, mat_quadratic_form, vec_norm};
+use crate::linalg::generic::{mat_cholesky, mat_quadratic_form, mat_vec_mul, vec_norm};
 
 // ─── Gaussian mixture splitting ─────────────────────────────────────
 
@@ -30,6 +30,9 @@ pub enum GaussianSplitError {
     /// Covariance is not positive-semidefinite along the requested
     /// direction: \\(\mathbf{e}^\top \Sigma \, \mathbf{e} < 0\\).
     NegativeVarianceAlongDirection,
+    /// Variance along the requested direction is positive but so small
+    /// (subnormal) that the deflation scale \\(1/\sigma_v^2\\) overflows.
+    DegenerateVarianceAlongDirection,
 }
 
 impl std::fmt::Display for GaussianSplitError {
@@ -40,6 +43,12 @@ impl std::fmt::Display for GaussianSplitError {
             Self::NonFiniteInput => write!(f, "mean or covariance contains NaN/Inf"),
             Self::NegativeVarianceAlongDirection => {
                 write!(f, "covariance is not PSD along the split direction")
+            }
+            Self::DegenerateVarianceAlongDirection => {
+                write!(
+                    f,
+                    "variance along the split direction is too small to deflate without overflow"
+                )
             }
         }
     }
@@ -56,13 +65,68 @@ impl std::error::Error for GaussianSplitError {}
 ///
 /// # Algorithm
 ///
-/// 1. Variance along **e**: \\(\sigma_v^2 = \mathbf{e}^\top \Sigma \, \mathbf{e}\\).
-/// 2. Shared sub-covariance: \\(\Sigma_k = \Sigma - \frac{K-1}{K}\,\sigma_v^2\,\mathbf{e}\mathbf{e}^\top\\).
-/// 3. Component means: \\(\mu_k = \mu + c_k \, d \, \sigma_v \, \mathbf{e}\\)
+/// 1. Variance along **e**: \\(\sigma_v^2 = \mathbf{e}^\top \Sigma \\, \mathbf{e}\\),
+///    and the deflation vector \\(\mathbf{w} = \Sigma \mathbf{e}\\).
+/// 2. Shared sub-covariance: \\(\Sigma_k = \Sigma - \alpha \\, \mathbf{w}\mathbf{w}^\top\\)
+///    with \\(\alpha = \frac{K-1}{K}\\,\sigma_v^{-2}\\).
+/// 3. Component means: \\(\mu_k = \mu + c_k \\, d \\, \mathbf{w} / \sigma_v\\)
 ///    where \\(d = \sqrt{(K-1)/S}\\), \\(S = \sum c_k^2\\), and the offsets
 ///    \\(c_k\\) are symmetrically spaced integers (odd \\(K\\)) or
 ///    half-integers (even \\(K\\)).
-/// 4. Weights: \\(w_k = 1/K\\).
+/// 4. Weights: each component carries \\(1/K\\).
+///
+/// If \\(\sigma_v^2 = 0\\) the direction carries no spread: the routine
+/// returns \\(K\\) identical copies of \\((\boldsymbol{\mu}, \Sigma)\\).
+///
+/// # Why the deflation follows \\(\Sigma\mathbf{e}\\)
+///
+/// Moment matching is exact: the second moment of the mean offsets is
+/// \\[
+/// \frac{1}{K}\sum_k (c_k d)^2 \frac{\mathbf{w}\mathbf{w}^\top}{\sigma_v^2}
+/// = \frac{K-1}{K}\frac{\mathbf{w}\mathbf{w}^\top}{\sigma_v^2}
+/// = \alpha\\,\mathbf{w}\mathbf{w}^\top,
+/// \\]
+/// which cancels the deflation, and the symmetric \\(c_k\\) leave the mean
+/// unmoved — so the mixture reproduces \\((\boldsymbol{\mu}, \Sigma)\\) for
+/// **any** direction, not merely along \\(\mathbf{e}\\).
+///
+/// Every \\(\Sigma_k\\) is positive-semidefinite whenever \\(\Sigma\\) is.
+/// By Cauchy–Schwarz in the \\(\Sigma\\)-inner product,
+/// \\(\alpha (\mathbf{x}^\top \Sigma \mathbf{e})^2 \le
+/// \frac{K-1}{K}\\,\mathbf{x}^\top \Sigma \mathbf{x}\\), hence
+/// \\[
+/// \mathbf{x}^\top \Sigma_k \mathbf{x} \ge
+/// \frac{1}{K}\\,\mathbf{x}^\top \Sigma \mathbf{x} \ge 0
+/// \quad\text{for all } \mathbf{x},
+/// \qquad \Sigma_k \succeq \Sigma / K .
+/// \\]
+/// Since \\(\Sigma - \Sigma_k = \alpha\\,\mathbf{w}\mathbf{w}^\top \succeq 0\\)
+/// as well, every component is bracketed
+/// \\(\Sigma/K \preceq \Sigma_k \preceq \Sigma\\), and the split-direction
+/// marginal is exact: \\(\mathbf{e}^\top \Sigma_k \mathbf{e} = \sigma_v^2/K\\).
+///
+/// Deflating along \\(\mathbf{e}\\) itself does **not** have this property:
+/// a rank-1 downdate \\(c\\,\mathbf{e}\mathbf{e}^\top\\) preserves
+/// positive-semidefiniteness only for
+/// \\(c \le 1/(\mathbf{e}^\top \Sigma^{-1} \mathbf{e})\\), the *conditional*
+/// variance along \\(\mathbf{e}\\), which the *marginal* variance
+/// \\(\sigma_v^2\\) can exceed by orders of magnitude on ill-conditioned
+/// covariances. The two coincide exactly when \\(\mathbf{e}\\) is an
+/// eigenvector of \\(\Sigma\\) (the Cauchy–Schwarz equality condition),
+/// and the Kantorovich inequality bounds their ratio by
+/// \\((\kappa+1)^2/(4\kappa)\\) in the condition number \\(\kappa\\) —
+/// the "orders of magnitude" above is that bound at large \\(\kappa\\).
+///
+/// When \\(\mathbf{e}\\) *is* an eigenvector, \\(\Sigma\mathbf{e} = \lambda
+/// \mathbf{e}\\) gives \\(\alpha\\,\mathbf{w}\mathbf{w}^\top =
+/// \frac{K-1}{K}\lambda\\,\mathbf{e}\mathbf{e}^\top\\) and
+/// \\(\mathbf{w}/\sigma_v = \sigma_v \mathbf{e}\\): the construction reduces
+/// algebraically to the marginal-variance deflation, so eigenvector-aligned
+/// splits agree to floating-point round-off (a few ulp; the multiplication
+/// order differs, so not bit-for-bit). The marginal spacing of the component means along
+/// \\(\mathbf{e}\\) is likewise unchanged in general —
+/// \\(\mathbf{e}^\top(\boldsymbol{\mu}_k - \boldsymbol{\mu}) = c_k d \sigma_v\\)
+/// — only their motion off \\(\mathbf{e}\\) differs.
 ///
 /// This is DeMars-style equal-weight splitting with **uniform spacing**,
 /// not the DeMars (2013) optimized splitting library that tabulates
@@ -83,7 +147,14 @@ impl std::error::Error for GaussianSplitError {}
 /// - [`GaussianSplitError::NonFiniteInput`] if `mean` or `cov` contains
 ///   non-finite components.
 /// - [`GaussianSplitError::NegativeVarianceAlongDirection`] if
-///   \\(\mathbf{e}^\top \Sigma \, \mathbf{e} < 0\\).
+///   \\(\mathbf{e}^\top \Sigma \\, \mathbf{e} < 0\\).
+/// - [`GaussianSplitError::DegenerateVarianceAlongDirection`] if
+///   \\(\mathbf{e}^\top \Sigma \\, \mathbf{e}\\) is positive but subnormal,
+///   so the deflation scale would overflow.
+///
+/// \\(\Sigma\\) itself is assumed positive-semidefinite; only the variance
+/// along \\(\mathbf{e}\\) is checked. With an indefinite \\(\Sigma\\) the
+/// component-PSD guarantee above does not hold.
 #[allow(clippy::type_complexity)]
 #[allow(clippy::needless_range_loop)]
 pub fn split_gaussian<const N: usize>(
@@ -122,13 +193,27 @@ pub fn split_gaussian<const N: usize>(
     if sigma_v_sq < 0.0 {
         return Err(GaussianSplitError::NegativeVarianceAlongDirection);
     }
+    if sigma_v_sq == 0.0 {
+        // No spread along e: nothing to deflate and nothing to shift, and the
+        // 1/sigma_v_sq scaling below is undefined.
+        return Ok(vec![(weight, *mean, *cov); k]);
+    }
     let sigma_v = sigma_v_sq.sqrt();
 
-    let scale = sigma_v_sq * (k - 1) as f64 / k as f64;
+    // Deflate along w = Σe, not along e: a rank-1 downdate c e eᵀ stays PSD
+    // only for c <= 1/(eᵀΣ⁻¹e), which the marginal variance eᵀΣe exceeds
+    // unless e is an eigenvector of Σ.
+    let w = mat_vec_mul(cov, &e);
+    let alpha = (k - 1) as f64 / k as f64 / sigma_v_sq;
+    if !alpha.is_finite() {
+        // sigma_v_sq is subnormal: the deflation scale overflows, and the
+        // components would carry -inf/NaN entries.
+        return Err(GaussianSplitError::DegenerateVarianceAlongDirection);
+    }
     let mut sub_cov = *cov;
     for i in 0..N {
         for j in 0..N {
-            sub_cov[i][j] -= scale * e[i] * e[j];
+            sub_cov[i][j] -= alpha * w[i] * w[j];
         }
     }
 
@@ -138,10 +223,10 @@ pub fn split_gaussian<const N: usize>(
 
     let mut components = Vec::with_capacity(k);
     for offset in &offsets {
-        let shift = offset * d * sigma_v;
+        let shift = offset * d / sigma_v;
         let mut mean_k = *mean;
         for i in 0..N {
-            mean_k[i] += shift * e[i];
+            mean_k[i] += shift * w[i];
         }
         components.push((weight, mean_k, sub_cov));
     }
@@ -489,6 +574,7 @@ pub fn weighted_sample_statistics<const N: usize>(
 #[allow(clippy::type_complexity)]
 mod tests {
     use super::*;
+    use crate::linalg::generic::mat_mul;
 
     // ── scaled (Merwe) sigma points ───────────────────────────────
 
@@ -771,6 +857,257 @@ mod tests {
                 for j in 0..2 {
                     assert!((a.2[i][j] - b.2[i][j]).abs() < 1e-14);
                 }
+            }
+        }
+    }
+
+    // ── split_gaussian: deflation along Σe ────────────────────────
+
+    /// Householder reflection \\(I - 2\mathbf{v}\mathbf{v}^\top / \lVert\mathbf{v}\rVert^2\\).
+    fn householder_6(v: [f64; 6]) -> [[f64; 6]; 6] {
+        let norm_sq: f64 = v.iter().map(|x| x * x).sum();
+        let mut h = [[0.0_f64; 6]; 6];
+        for i in 0..6 {
+            h[i][i] = 1.0;
+            for j in 0..6 {
+                h[i][j] -= 2.0 * v[i] * v[j] / norm_sq;
+            }
+        }
+        h
+    }
+
+    /// A 6×6 covariance \\(Q \, \mathrm{diag}(\lambda) \, Q^\top\\) whose
+    /// eigenvalues span eight decades (\\(10^4\\) down to \\(10^{-4}\\)),
+    /// with \\(Q\\) a product of two Householder reflections so that no
+    /// coordinate axis sits near an eigenvector: the largest component of
+    /// \\(Q^\top \mathbf{e}_0\\) is ≈ 0.62. Along \\(\mathbf{e}_0\\) the
+    /// marginal variance \\(\mathbf{e}_0^\top \Sigma \mathbf{e}_0\\) exceeds
+    /// the conditional variance \\(1/(\mathbf{e}_0^\top \Sigma^{-1} \mathbf{e}_0)\\)
+    /// by a factor ≈ \\(2.3 \times 10^5\\) — the regime where deflating by
+    /// the marginal variance overshoots.
+    fn ill_conditioned_6x6() -> [[f64; 6]; 6] {
+        let q = mat_mul::<6, 6, 6>(
+            &householder_6([1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+            &householder_6([1.0, -2.0, 3.0, -4.0, 5.0, -6.0]),
+        );
+        let lambda = [1.0e4, 3.0e3, 5.0e2, 1.0e1, 5.0e-2, 1.0e-4];
+        let mut cov = [[0.0_f64; 6]; 6];
+        for i in 0..6 {
+            for j in 0..6 {
+                let mut acc = 0.0;
+                for m in 0..6 {
+                    acc += q[i][m] * lambda[m] * q[j][m];
+                }
+                cov[i][j] = acc;
+            }
+        }
+        // Symmetrize away the last ulp of asymmetry from the triple product.
+        for i in 0..6 {
+            for j in 0..i {
+                let v = 0.5 * (cov[i][j] + cov[j][i]);
+                cov[i][j] = v;
+                cov[j][i] = v;
+            }
+        }
+        cov
+    }
+
+    #[test]
+    fn split_gaussian_components_psd_along_non_eigenvector() {
+        // Deflating by the marginal variance σ_v² = eᵀΣe is only PSD-safe up
+        // to the conditional variance 1/(eᵀΣ⁻¹e); the two agree only when e
+        // is an eigenvector. Here they differ by five orders of magnitude, so
+        // every component must still admit a Cholesky factor.
+        let cov = ill_conditioned_6x6();
+        let mean = [1.0, -2.0, 3.0, -0.5, 0.25, 4.0];
+        let dir = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        // Shifted-Cholesky PSD test: M ⪰ −tol·I iff M + tol·I admits a
+        // Cholesky factor. λ_max ≈ 1e4, so tol = 1e-9 is ~1e-13 relative.
+        let tol = 1.0e-9;
+        for k in [2, 3, 5] {
+            let comps = split_gaussian::<6>(&mean, &cov, &dir, k).unwrap();
+            let kf = k as f64;
+            for (idx, (_, _, c)) in comps.iter().enumerate() {
+                assert!(
+                    mat_cholesky(c).is_some(),
+                    "k = {k}, component {idx}: sub-covariance is not positive-definite"
+                );
+                // The theorem itself: Σ/K ⪯ Σ_k ⪯ Σ.
+                let mut lower = *c;
+                let mut upper = cov;
+                for i in 0..6 {
+                    for j in 0..6 {
+                        lower[i][j] -= cov[i][j] / kf;
+                        upper[i][j] -= c[i][j];
+                    }
+                    lower[i][i] += tol;
+                    upper[i][i] += tol;
+                }
+                assert!(
+                    mat_cholesky(&lower).is_some(),
+                    "k = {k}, component {idx}: Σ_k − Σ/K is not PSD"
+                );
+                assert!(
+                    mat_cholesky(&upper).is_some(),
+                    "k = {k}, component {idx}: Σ − Σ_k is not PSD"
+                );
+                // The split-direction marginal is exact: eᵀΣ_k e = σ_v²/K.
+                let sv_k = mat_quadratic_form(&dir, c);
+                let sv = mat_quadratic_form(&dir, &cov);
+                assert!(
+                    (sv_k - sv / kf).abs() <= 1e-12 * sv,
+                    "k = {k}, component {idx}: eᵀΣ_k e = {sv_k} vs {}",
+                    sv / kf
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn split_gaussian_moment_match_ill_conditioned_non_eigenvector() {
+        // Moment matching must stay exact on the same ill-conditioned Σ: the
+        // spread of the component means cancels the deflation identically.
+        let cov = ill_conditioned_6x6();
+        let mean: [f64; 6] = [1.0, -2.0, 3.0, -0.5, 0.25, 4.0];
+        let dir = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let cov_scale = cov.iter().flatten().fold(0.0_f64, |a, x| a.max(x.abs()));
+        let mean_scale = mean.iter().fold(0.0_f64, |a, x| a.max(x.abs()));
+        for k in [2, 3, 5] {
+            let comps = split_gaussian::<6>(&mean, &cov, &dir, k).unwrap();
+            let (m_back, c_back) = mixture_moments(&comps);
+            for i in 0..6 {
+                let rel = (m_back[i] - mean[i]).abs() / mean_scale;
+                assert!(rel < 1e-13, "k = {k}, mean[{i}] rel err = {rel}");
+                for j in 0..6 {
+                    let rel = (c_back[i][j] - cov[i][j]).abs() / cov_scale;
+                    assert!(rel < 1e-13, "k = {k}, cov[{i}][{j}] rel err = {rel}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn split_gaussian_eigenvector_direction_reduces_to_marginal_deflation() {
+        // Σ is diagonal, so e₁ is an exact eigenvector with λ = 9: w = Σe = λe
+        // and α wwᵀ = ((K−1)/K) λ eeᵀ, i.e. the marginal-variance deflation.
+        // Expected values below are that analytic result; the routine reaches
+        // them through a different multiplication order, so the tolerance is a
+        // few ulp rather than bit equality (the values are O(10)).
+        let mean = [1.0, -2.0, 0.5];
+        let cov = [[4.0, 0.0, 0.0], [0.0, 9.0, 0.0], [0.0, 0.0, 16.0]];
+        let dir = [0.0, 1.0, 0.0];
+        let comps = split_gaussian::<3>(&mean, &cov, &dir, 3).unwrap();
+        // σ_v² = 9 and (K−1)/K = 2/3, so the (1,1) entry loses 6.
+        let expected_cov = [[4.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 16.0]];
+        // c = (−1, 0, 1), S = 2, d = 1, σ_v = 3: shifts of ∓3 along e₁.
+        let expected_means = [[1.0, -5.0, 0.5], [1.0, -2.0, 0.5], [1.0, 1.0, 0.5]];
+        assert_eq!(comps.len(), 3);
+        for (idx, (w, m, c)) in comps.iter().enumerate() {
+            assert!((w - 1.0 / 3.0).abs() < 1e-15);
+            for i in 0..3 {
+                assert!(
+                    (m[i] - expected_means[idx][i]).abs() < 1e-13,
+                    "component {idx} mean[{i}] = {} vs {}",
+                    m[i],
+                    expected_means[idx][i]
+                );
+                for j in 0..3 {
+                    assert!(
+                        (c[i][j] - expected_cov[i][j]).abs() < 1e-13,
+                        "component {idx} cov[{i}][{j}] = {} vs {}",
+                        c[i][j],
+                        expected_cov[i][j]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn split_gaussian_zero_variance_direction_returns_identical_components() {
+        // Σ is singular along e₀ (σ_v² = 0): nothing to deflate, nothing to
+        // shift, so the split degenerates to K copies of the input.
+        let mean = [1.0, 2.0, 3.0];
+        let cov = [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0]];
+        let dir = [1.0, 0.0, 0.0];
+        for k in [2, 3, 5] {
+            let comps = split_gaussian::<3>(&mean, &cov, &dir, k).unwrap();
+            assert_eq!(comps.len(), k);
+            for (w, m, c) in &comps {
+                assert!((w - 1.0 / k as f64).abs() < 1e-15);
+                assert_eq!(*m, mean);
+                assert_eq!(*c, cov);
+            }
+        }
+    }
+
+    #[test]
+    fn split_gaussian_zero_variance_with_nonzero_sigma_e() {
+        // eᵀΣe = 0 while Σe ≠ 0 — reachable only for a non-PSD Σ, and the one
+        // case where the 1/σ_v² scaling would blow up. The result must stay
+        // finite and match the σ_v² = 0 behavior above.
+        let mean = [0.0, 0.0];
+        let cov = [[0.0, 1.0], [1.0, 1.0]];
+        let dir = [1.0, 0.0];
+        let comps = split_gaussian::<2>(&mean, &cov, &dir, 3).unwrap();
+        assert_eq!(comps.len(), 3);
+        for (_, m, c) in &comps {
+            assert_eq!(*m, mean);
+            assert_eq!(*c, cov);
+        }
+    }
+
+    #[test]
+    fn split_gaussian_subnormal_variance_refuses() {
+        // 0 < σ_v² < ~3.7e-309: the deflation scale 1/σ_v² overflows f64,
+        // and without the guard the components carry -inf/NaN entries
+        // returned as Ok — exactly the silent degradation the typed error
+        // exists to prevent.
+        let mean = [0.0, 0.0, 0.0];
+        let cov = [[1.0e-310, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let dir = [1.0, 0.0, 0.0];
+        assert!(matches!(
+            split_gaussian::<3>(&mean, &cov, &dir, 3),
+            Err(GaussianSplitError::DegenerateVarianceAlongDirection)
+        ));
+    }
+
+    #[test]
+    fn split_gaussian_mean_offsets_follow_sigma_e() {
+        // Component means step along w = Σe, and their projections onto e are
+        // the unchanged c_k d σ_v marginal spacing.
+        let cov = ill_conditioned_6x6();
+        let mean = [1.0, -2.0, 3.0, -0.5, 0.25, 4.0];
+        let dir = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        // Independent of the implementation's helpers: explicit w = Σe and
+        // σ_v² = e·w, so this can fail on more than operation ordering.
+        let mut w = [0.0_f64; 6];
+        for i in 0..6 {
+            for j in 0..6 {
+                w[i] += cov[i][j] * dir[j];
+            }
+        }
+        let sigma_v = (0..6).map(|i| dir[i] * w[i]).sum::<f64>().sqrt();
+        for k in [2, 3, 5] {
+            let comps = split_gaussian::<6>(&mean, &cov, &dir, k).unwrap();
+            let offsets: Vec<f64> = (0..k).map(|i| i as f64 - (k - 1) as f64 / 2.0).collect();
+            let s: f64 = offsets.iter().map(|c| c * c).sum();
+            let d = ((k - 1) as f64 / s).sqrt();
+            for (idx, (_, m, _)) in comps.iter().enumerate() {
+                for i in 0..6 {
+                    let expected = offsets[idx] * d * w[i] / sigma_v;
+                    assert!(
+                        (m[i] - mean[i] - expected).abs() <= 1e-12 * expected.abs().max(1.0),
+                        "k = {k}, component {idx}: offset[{i}] = {} vs {expected}",
+                        m[i] - mean[i]
+                    );
+                }
+                let proj: f64 = (0..6).map(|i| dir[i] * (m[i] - mean[i])).sum();
+                let expected = offsets[idx] * d * sigma_v;
+                assert!(
+                    (proj - expected).abs() <= 1e-12 * sigma_v,
+                    "k = {k}, component {idx}: eᵀ(μ_k − μ) = {proj} vs {expected}"
+                );
             }
         }
     }
