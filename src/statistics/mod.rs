@@ -13,6 +13,8 @@
 //!   `chi2_sf`, `normal_pdf`, `normal_cdf`.
 //! - [`multivariate`] — `split_gaussian`, `sigma_points`,
 //!   `sample_statistics` generic over the state dimension `N`.
+//! - [`split_library`] — the tabulated univariate Gaussian mixture
+//!   `split_gaussian` splits with.
 //!
 //! # Numerical notes
 //!
@@ -26,9 +28,13 @@
 
 pub mod distributions;
 pub mod multivariate;
+pub mod split_library;
 
 pub use distributions::{chi2_sf, ln_gamma, normal_cdf, normal_pdf, upper_inc_gamma_reg};
 pub use multivariate::{
     GaussianSplitError, ScaledSigmaPoints, SigmaPointScaling, SigmaPointsError, sample_statistics,
     sigma_points, sigma_points_scaled, split_gaussian, weighted_sample_statistics,
+};
+pub use split_library::{
+    MAX_SPLIT_COMPONENTS, MIN_SPLIT_COMPONENTS, UnivariateSplit, univariate_split,
 };
