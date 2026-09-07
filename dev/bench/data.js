@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788435501807,
+  "lastUpdate": 1788823865801,
   "repoUrl": "https://github.com/Empyrean-Dynamics/nolan",
   "entries": {
     "Nolan Benchmarks": [
@@ -16991,6 +16991,654 @@ window.BENCHMARK_DATA = {
             "name": "wrap_360_x64",
             "value": 240,
             "range": "± 8",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "moeyensj@users.noreply.github.com",
+            "name": "Joachim Moeyens",
+            "username": "moeyensj"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f3a52e006364a9b20f61a276be4f8a3bd2db71f3",
+          "message": "Split Gaussians from an optimized library instead of uniform spacing (#37)\n\n`split_gaussian` placed its components at uniformly spaced multiples of\nthe split-direction standard deviation and gave each an equal weight.\nThat matched the parent's first two moments and nothing beyond them, and\nwhat it gave up was the tail. Along the split direction, as a fraction of\nthe parent's mass beyond a given distance:\n\n               3 sigma    4 sigma    5 sigma\n  k = 3        0.066      1.1e-3     2.5e-6\n  k = 9        1.6e-4     4.5e-11    4.8e-21\n  k = 15       6.8e-7     4.3e-18    2.6e-35\n\nRecursion made it worse rather than better. Splitting a three-component\nmixture again along the same direction reproduces 8.1e-4 of the parent's\nmass beyond 3 sigma and 6.4e-10 of it beyond 4 sigma, and a third level\nreaches 2.1e-7 and 1.1e-24. Raising k made it worse too, because every\nadded component narrowed the shared width while the outermost mean barely\nmoved. A mixture built this way cannot carry a tail probability.\n\nReplace it with the univariate splitting library of Vittaldev & Russell\n2016: for each k, the weights and means that minimize the L2 distance\nbetween the standard normal and a symmetric mixture of equally wide\nGaussians, at a width fixed by a rule in k. The same measurement\nafterwards:\n\n               3 sigma    4 sigma    5 sigma\n  k = 3        0.46       0.079      4.4e-3\n  k = 9        1.01       0.25       1.6e-3\n  k = 15       1.00       0.91       0.033\n\nAt k = 3 that is 7.0x, 74x and 1800x more of the parent's tail, and the\ndirection of the trend in k is reversed.\n\nThe deep tail is still not reproduced at any k, and the docs say so.\nEvery component is narrower than the parent, so every such mixture has a\ntail that decays faster than the parent's; the library moves the\ncrossover out, it does not remove it. Recursion along one direction still\ndegrades the tail, only far more slowly: three levels of the library at\nk = 3 hold 0.22 of the parent's mass beyond 3 sigma and 2.7e-12 beyond\n5 sigma, where three levels of the uniform split held 2.1e-7 and 3.5e-53.\n\nTwo departures from the paper are deliberate and documented. The\ncomponent width is not optimized: with it free the problem has the\ntrivial solution of a single unit-variance component equal to the parent,\nat zero distance and no split at all, so the width comes from the paper's\nsecond rule. And the mixture is constrained to unit variance, which the\npaper does not require, because `split_gaussian` must reproduce the\ncovariance it was handed and a split that sheds a fixed fraction of the\nvariance at every level compounds that loss under recursion. The\nconstraint also fixes the width, in two stages: a mixture cannot carry\nunit variance at the rule's width without moving its means outward, so\nstage one solves the unconstrained problem to measure that outward move\nand stage two solves for the optimum at the corrected width. Solving at\nthe width rather than dilating a solution from a narrower one is worth\nbetween 1.0 and 1.8 times the parent's mass beyond 5 sigma.\n\nThe table is generated, not transcribed. `examples/generate_split_library`\nsolves the optimization with the crate's own Levenberg-Marquardt driver,\nover an exact closed-form Gauss-Newton system in function space, and\nemits `src/statistics/split_library.rs`. `tests/split_library.rs` compiles\nthe same fitter, re-solves, and checks what is committed; it also\nreproduces Table 1 of the CMES paper to six digits under that paper's own\nwidth rule, which is what says the cost function and constraint set are\nthe published ones. The closed-form gradient the driver is handed carries\na chain rule through the mean the variance constraint eliminates, and is\nconfronted with Jet1 differentiation at deliberately non-stationary\npoints, since at a solution both gradients vanish whatever the derivation\nsays.\n\nThe entries and the width they sit at are both outputs of an iterative\nsolve rather than closed forms, so the suite compares them against a\nfresh solve at tolerances taken from the measured spread of that solve:\n1.1e-8 on the width, 5.2e-6 on the weights and 8.1e-5 on the means over\neleven variants of the starting point and the driver's stopping\ntolerances. The bounds asserted sit 60 to 100 times above those and\nstill an order or more below any drift that would matter.\n\nBehaviour changes for callers. Weights are no longer 1/k. At k = 3 they\nare 0.211/0.577/0.211, the means move to +-1.1284 sigma from +-1 sigma,\nand the shared width rises to 0.6793 sigma from 0.5774. The mixture mean\nand covariance still round-trip exactly, and the component PSD bracket\nimproves from Sigma_k >= Sigma/k to Sigma_k >= s^2 Sigma, which is a\nhigher floor at every k. `k` above the library's 15 is refused through a\nnew `KAboveLibrary` variant rather than approximated.\n\nMeasured on this machine, k = 3 costs 81.2 ns against 94.0 ns before and\nk = 5 costs 91.5 ns against 107.7 ns: reading a static table is cheaper\nthan the per-call allocation and square root it replaces.\n\nThe version moves to 1.15.0 here, so the release can be tagged once\nthe rest of its batch lands: the split geometry changes every mixture a\ncaller builds, which is a minor bump under this crate's convention.\n\n\nClaude-Session: https://claude.ai/code/session_01VGMgAEvfuaGGbNEBwenbNo\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-07T16:11:18-07:00",
+          "tree_id": "f05532a32c316eff77b6cc9bad6f2289d65377fa",
+          "url": "https://github.com/Empyrean-Dynamics/nolan/commit/f3a52e006364a9b20f61a276be4f8a3bd2db71f3"
+        },
+        "date": 1788823864805,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "jet1_6_constant",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_constant",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_constant",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_variable",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_variable",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_variable",
+            "value": 29,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_add",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_add",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_add",
+            "value": 90,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul",
+            "value": 37,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul",
+            "value": 206,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_div",
+            "value": 5,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_div",
+            "value": 54,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_div",
+            "value": 211,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul_scalar",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul_scalar",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul_scalar",
+            "value": 60,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sin",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sin",
+            "value": 34,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sin",
+            "value": 165,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_cos",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_cos",
+            "value": 34,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_cos",
+            "value": 171,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sqrt",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sqrt",
+            "value": 29,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sqrt",
+            "value": 163,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_powi_3",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_powi_3",
+            "value": 27,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_powi_3",
+            "value": 155,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_atan2",
+            "value": 12,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_atan2",
+            "value": 63,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_atan2",
+            "value": 397,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_gravity_accel",
+            "value": 22,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_gravity_accel",
+            "value": 156,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_gravity_accel",
+            "value": 1220,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_add",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_add",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_add",
+            "value": 256,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_mul",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_mul",
+            "value": 105,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_mul",
+            "value": 609,
+            "range": "± 24",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_sin",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_sin",
+            "value": 69,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_sin",
+            "value": 420,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_gravity_accel",
+            "value": 36,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_gravity_accel",
+            "value": 480,
+            "range": "± 26",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_gravity_accel",
+            "value": 3846,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_extract_grad",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_extract_grad",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_extract_hess",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_extract_hess",
+            "value": 61,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_extract_tens",
+            "value": 175,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_extract_tens",
+            "value": 576,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_gravity_magnitude",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate2_6_gravity_magnitude",
+            "value": 136,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate3_6_gravity_magnitude",
+            "value": 1004,
+            "range": "± 42",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_3_gravity_accel",
+            "value": 30,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_first_gravity",
+            "value": 41,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_second_gravity",
+            "value": 166,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_third_gravity",
+            "value": 1629,
+            "range": "± 33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_f64",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_f64",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_f64",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_jet1_6",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_jet1_6",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_jet1_6",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_f64",
+            "value": 82,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_f64",
+            "value": 108,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_jet1_6",
+            "value": 581,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_jet1_6",
+            "value": 831,
+            "range": "± 21",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_f64",
+            "value": 184,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_f64",
+            "value": 298,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_jet1_9",
+            "value": 2196,
+            "range": "± 93",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_jet1_9",
+            "value": 3735,
+            "range": "± 111",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_6_f64",
+            "value": 333,
+            "range": "± 26",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_9_f64",
+            "value": 755,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_transpose_2x6",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_2x2x6",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_6x2x6",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_ata_2x6",
+            "value": 13,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_vec_mul_2",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_det_6",
+            "value": 65,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_trace_cube_6",
+            "value": 129,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_frobenius_6x6",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_largest_singular_value_6",
+            "value": 1836,
+            "range": "± 49",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "condition_number_6",
+            "value": 9683,
+            "range": "± 221",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sym_eigenvalues_3",
+            "value": 46,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_symmetric_eigen_6",
+            "value": 1183,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nearest_psd_6",
+            "value": 1227,
+            "range": "± 40",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "tikhonov_with_report_6",
+            "value": 7590,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sample_statistics_6_n50",
+            "value": 255,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sigma_points_6",
+            "value": 100,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k3",
+            "value": 68,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k5",
+            "value": 99,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k7",
+            "value": 108,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k15",
+            "value": 150,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linspace_64",
+            "value": 73,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "logspace_64",
+            "value": 310,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linear_clamped_64",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_pi_x64",
+            "value": 221,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_2pi_x64",
+            "value": 219,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_180_x64",
+            "value": 149,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_360_x64",
+            "value": 151,
+            "range": "± 4",
             "unit": "ns/iter"
           }
         ]
