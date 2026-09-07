@@ -40,7 +40,7 @@ The repo and internal codename stay `nolan`.
 
 ```toml
 [dependencies]
-hyperjet = "1.14.0"
+hyperjet = "1.15.0"
 ```
 ```rust
 use hyperjet::jets::Jet1;
@@ -51,7 +51,7 @@ Internal Empyrean callers can alias the dep back to `nolan` so existing
 
 ```toml
 [dependencies]
-nolan = { package = "hyperjet", version = "1.14.0" }
+nolan = { package = "hyperjet", version = "1.15.0" }
 ```
 ```rust,ignore
 use nolan::jets::Jet1;
@@ -381,6 +381,7 @@ generic over the state dimension:
 use hyperjet::statistics::{
     split_gaussian, sigma_points, sample_statistics,
     sigma_points_scaled, weighted_sample_statistics, SigmaPointScaling,
+    univariate_split, MAX_SPLIT_COMPONENTS,
 };
 
 // Canonical 2N+1 unscaled Julier-Uhlmann sigma points: sample_statistics
@@ -396,13 +397,52 @@ let sp = sigma_points_scaled::<6>(&mu, &cov, &SigmaPointScaling::merwe()).unwrap
 let (mu_ut, cov_ut) =
     weighted_sample_statistics::<6>(&sp.points, &sp.weights_mean, &sp.weights_cov).unwrap();
 
-// Equal-weight Gaussian mixture decomposition along a chosen direction
-// (DeMars-style uniform spacing; preserves the mixture mean and
-// covariance for any K ≥ 1). The shared sub-covariance is deflated along
-// Σe rather than e, so every component stays PSD (Σ_k ⪰ Σ/K) even when
-// the split direction is far from an eigenvector of Σ.
+// Gaussian mixture decomposition along a chosen direction, from the
+// tabulated Vittaldev-Russell splitting library. Weights are unequal and
+// fall away from the centre; the mixture reproduces the parent mean and
+// covariance exactly, for 1 <= k <= MAX_SPLIT_COMPONENTS (15). A wider k
+// is refused by name rather than approximated. The shared sub-covariance
+// is deflated along Σe rather than e, so every component stays PSD
+// (Σ_k ⪰ s²Σ) even when the split direction is far from an eigenvector.
 let components = split_gaussian::<6>(&mu, &cov, &direction, 3).unwrap();
+
+// The underlying univariate entry: weights, means and the shared
+// component width s, all in units of the parent standard deviation.
+let entry = univariate_split(3).unwrap();
 ```
+
+The library replaces an equal-weight split with means at uniformly spaced
+multiples of the standard deviation, which matched the first two moments
+and nothing further. The difference is in the tail. Writing the mixture's
+mass beyond `Δσ` along the split direction as a fraction of the parent's:
+
+| k | split | 3σ | 4σ | 5σ |
+|---|---|---|---|---|
+| 3 | uniform, equal weight | 0.066 | 1.1e-3 | 2.5e-6 |
+| 3 | library | 0.46 | 0.079 | 4.4e-3 |
+| 15 | uniform, equal weight | 6.8e-7 | 4.3e-18 | 2.6e-35 |
+| 15 | library | 1.00 | 0.91 | 0.033 |
+
+Under the uniform split the tail got worse as `k` rose; under the library
+it improves. No `k` reproduces the deep tail: every component is narrower
+than the parent, so the mixture's tail always decays faster in the end.
+
+The table is generated, not transcribed. From the repository, where the
+generator lives (`Cargo.toml`'s `include` list keeps `examples/` and
+`tools/` out of the published crate):
+
+```text
+cargo run --release --example generate_split_library > /tmp/split.rs \
+    && mv /tmp/split.rs src/statistics/split_library.rs \
+    && cargo fmt
+```
+
+The temporary matters: redirecting straight onto the module truncates it
+before cargo runs, and the crate then will not compile. So does the
+`cargo fmt`, which is what makes the emitted table match the committed
+file byte for byte. `tests/split_library.rs` re-solves the optimisation
+again and checks what is committed, and separately reproduces the
+seven-component library published in the source paper.
 
 ## Grids
 

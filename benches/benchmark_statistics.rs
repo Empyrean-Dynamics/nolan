@@ -67,6 +67,29 @@ fn bench_split_gaussian(c: &mut Criterion) {
             )
         })
     });
+    // The widest split a caller is likely to afford: cost is linear in
+    // the component count, since each component copies one N x N
+    // sub-covariance.
+    c.bench_function("split_gaussian_6_k7", |bench| {
+        bench.iter(|| {
+            split_gaussian::<6>(
+                black_box(&mean),
+                black_box(&cov),
+                black_box(&dir),
+                black_box(7),
+            )
+        })
+    });
+    c.bench_function("split_gaussian_6_k15", |bench| {
+        bench.iter(|| {
+            split_gaussian::<6>(
+                black_box(&mean),
+                black_box(&cov),
+                black_box(&dir),
+                black_box(15),
+            )
+        })
+    });
 }
 
 fn bench_grids(c: &mut Criterion) {

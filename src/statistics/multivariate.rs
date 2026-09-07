@@ -6,15 +6,26 @@
 //!
 //! # References
 //!
+//! - Vittaldev, V., & Russell, R. P. (2016). *Multidirectional Gaussian
+//!   mixture models for nonlinear uncertainty propagation.* Computer
+//!   Modeling in Engineering & Sciences 111(1): 83–117.
+//!   [doi:10.3970/cmes.2016.111.083](https://doi.org/10.3970/cmes.2016.111.083)
+//!   (the univariate splitting library [`split_gaussian`] draws from)
+//! - Vittaldev, V., & Russell, R. P. (2016). *Space object collision
+//!   probability using multidirectional Gaussian mixture models.*
+//!   Journal of Guidance, Control, and Dynamics 39(9): 2163–2169.
+//!   [doi:10.2514/1.G001610](https://doi.org/10.2514/1.G001610)
 //! - DeMars, K. J., Bishop, R. H., & Jah, M. K. (2013). *Entropy-based
 //!   approach for uncertainty propagation of nonlinear dynamical
-//!   systems.* J. Guid. Control Dyn. 36(4): 1047–1057. (univariate
-//!   Gaussian splitting library used by [`split_gaussian`])
+//!   systems.* Journal of Guidance, Control, and Dynamics 36(4):
+//!   1047–1057.
+//!   [doi:10.2514/1.58987](https://doi.org/10.2514/1.58987)
 //! - Julier, S. J., & Uhlmann, J. K. (1997). *A new extension of the
 //!   Kalman filter to nonlinear systems.* SPIE 3068: 182–193. (canonical
 //!   \\(2N+1\\) sigma-point construction used by [`sigma_points`])
 
 use crate::linalg::generic::{mat_cholesky, mat_quadratic_form, mat_vec_mul, vec_norm};
+use crate::statistics::split_library::{MAX_SPLIT_COMPONENTS, univariate_split};
 
 // ─── Gaussian mixture splitting ─────────────────────────────────────
 
@@ -23,6 +34,9 @@ use crate::linalg::generic::{mat_cholesky, mat_quadratic_form, mat_vec_mul, vec_
 pub enum GaussianSplitError {
     /// `k == 0`. A split must produce at least one component.
     InvalidK,
+    /// `k` exceeds [`MAX_SPLIT_COMPONENTS`]: the splitting library has
+    /// no entry that wide.
+    KAboveLibrary { k: usize, max: usize },
     /// Direction vector is the zero vector or contains NaN/Inf.
     InvalidDirection,
     /// Mean or covariance contains NaN/Inf.
@@ -39,6 +53,12 @@ impl std::fmt::Display for GaussianSplitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidK => write!(f, "k must be at least 1"),
+            Self::KAboveLibrary { k, max } => {
+                write!(
+                    f,
+                    "k = {k} exceeds the splitting library's {max} components"
+                )
+            }
             Self::InvalidDirection => write!(f, "direction must be non-zero and finite"),
             Self::NonFiniteInput => write!(f, "mean or covariance contains NaN/Inf"),
             Self::NegativeVarianceAlongDirection => {
@@ -57,53 +77,66 @@ impl std::fmt::Display for GaussianSplitError {
 impl std::error::Error for GaussianSplitError {}
 
 /// Decompose an N-dimensional Gaussian \\(N(\boldsymbol{\mu}, \Sigma)\\) into
-/// `k` equal-weight sub-Gaussians along a given direction \\(\mathbf{e}\\),
+/// `k` sub-Gaussians along a given direction \\(\mathbf{e}\\),
 /// preserving the mixture mean and total covariance.
 ///
-/// Returns a `Vec` of `(weight, mean, covariance)` tuples with
-/// `weight = 1/k`.
+/// Returns a `Vec` of `(weight, mean, covariance)` tuples. The weights
+/// are unequal: they fall away from the centre, by three orders of
+/// magnitude across the widest split.
 ///
 /// # Algorithm
+///
+/// The split is the tabulated univariate library of
+/// [`split_library`](super::split_library) — weights \\(w_i\\), means
+/// \\(m_i\\) and a common width \\(s\\), all in units of the parent's
+/// standard deviation — carried along \\(\mathbf{e}\\):
 ///
 /// 1. Variance along **e**: \\(\sigma_v^2 = \mathbf{e}^\top \Sigma \\, \mathbf{e}\\),
 ///    and the deflation vector \\(\mathbf{w} = \Sigma \mathbf{e}\\).
 /// 2. Shared sub-covariance: \\(\Sigma_k = \Sigma - \alpha \\, \mathbf{w}\mathbf{w}^\top\\)
-///    with \\(\alpha = \frac{K-1}{K}\\,\sigma_v^{-2}\\).
-/// 3. Component means: \\(\mu_k = \mu + c_k \\, d \\, \mathbf{w} / \sigma_v\\)
-///    where \\(d = \sqrt{(K-1)/S}\\), \\(S = \sum c_k^2\\), and the offsets
-///    \\(c_k\\) are symmetrically spaced integers (odd \\(K\\)) or
-///    half-integers (even \\(K\\)).
-/// 4. Weights: each component carries \\(1/K\\).
+///    with \\(\alpha = (1 - s^2)\\,\sigma_v^{-2}\\).
+/// 3. Component means: \\(\boldsymbol{\mu}_i = \boldsymbol{\mu} + m_i \\, \mathbf{w} / \sigma_v\\).
+/// 4. Weights: \\(w_i\\).
 ///
 /// If \\(\sigma_v^2 = 0\\) the direction carries no spread: the routine
-/// returns \\(K\\) identical copies of \\((\boldsymbol{\mu}, \Sigma)\\).
+/// returns \\(K\\) copies of \\((\boldsymbol{\mu}, \Sigma)\\) carrying
+/// the library's weights.
 ///
 /// # Why the deflation follows \\(\Sigma\mathbf{e}\\)
 ///
 /// Moment matching is exact: the second moment of the mean offsets is
 /// \\[
-/// \frac{1}{K}\sum_k (c_k d)^2 \frac{\mathbf{w}\mathbf{w}^\top}{\sigma_v^2}
-/// = \frac{K-1}{K}\frac{\mathbf{w}\mathbf{w}^\top}{\sigma_v^2}
+/// \sum_i w_i m_i^2 \frac{\mathbf{w}\mathbf{w}^\top}{\sigma_v^2}
+/// = (1 - s^2)\frac{\mathbf{w}\mathbf{w}^\top}{\sigma_v^2}
 /// = \alpha\\,\mathbf{w}\mathbf{w}^\top,
 /// \\]
-/// which cancels the deflation, and the symmetric \\(c_k\\) leave the mean
-/// unmoved — so the mixture reproduces \\((\boldsymbol{\mu}, \Sigma)\\) for
-/// **any** direction, not merely along \\(\mathbf{e}\\).
+/// using the library's own identity \\(s^2 + \sum_i w_i m_i^2 = 1\\).
+/// That cancels the deflation, and the antisymmetric \\(m_i\\) leave the
+/// mean unmoved — so the mixture reproduces
+/// \\((\boldsymbol{\mu}, \Sigma)\\) for **any** direction, not merely
+/// along \\(\mathbf{e}\\).
 ///
 /// Every \\(\Sigma_k\\) is positive-semidefinite whenever \\(\Sigma\\) is.
 /// By Cauchy–Schwarz in the \\(\Sigma\\)-inner product,
 /// \\(\alpha (\mathbf{x}^\top \Sigma \mathbf{e})^2 \le
-/// \frac{K-1}{K}\\,\mathbf{x}^\top \Sigma \mathbf{x}\\), hence
+/// (1 - s^2)\\,\mathbf{x}^\top \Sigma \mathbf{x}\\), hence
 /// \\[
 /// \mathbf{x}^\top \Sigma_k \mathbf{x} \ge
-/// \frac{1}{K}\\,\mathbf{x}^\top \Sigma \mathbf{x} \ge 0
+/// s^2\\,\mathbf{x}^\top \Sigma \mathbf{x} \ge 0
 /// \quad\text{for all } \mathbf{x},
-/// \qquad \Sigma_k \succeq \Sigma / K .
+/// \qquad \Sigma_k \succeq s^2 \Sigma .
 /// \\]
 /// Since \\(\Sigma - \Sigma_k = \alpha\\,\mathbf{w}\mathbf{w}^\top \succeq 0\\)
 /// as well, every component is bracketed
-/// \\(\Sigma/K \preceq \Sigma_k \preceq \Sigma\\), and the split-direction
-/// marginal is exact: \\(\mathbf{e}^\top \Sigma_k \mathbf{e} = \sigma_v^2/K\\).
+/// \\(s^2\Sigma \preceq \Sigma_k \preceq \Sigma\\), and the
+/// split-direction marginal is exact:
+/// \\(\mathbf{e}^\top \Sigma_k \mathbf{e} = s^2 \sigma_v^2\\).
+///
+/// The library widens that bracket's floor. The uniform split this
+/// replaced had \\(s^2 = 1/K\\); the library's \\(s^2\\) is larger at
+/// every \\(K\\) — 0.461 against 0.333 at \\(K = 3\\), 0.131 against
+/// 0.067 at \\(K = 15\\) — so components come away further from the
+/// semi-definite boundary than they did before.
 ///
 /// Deflating along \\(\mathbf{e}\\) itself does **not** have this property:
 /// a rank-1 downdate \\(c\\,\mathbf{e}\mathbf{e}^\top\\) preserves
@@ -119,29 +152,52 @@ impl std::error::Error for GaussianSplitError {}
 ///
 /// When \\(\mathbf{e}\\) *is* an eigenvector, \\(\Sigma\mathbf{e} = \lambda
 /// \mathbf{e}\\) gives \\(\alpha\\,\mathbf{w}\mathbf{w}^\top =
-/// \frac{K-1}{K}\lambda\\,\mathbf{e}\mathbf{e}^\top\\) and
+/// (1 - s^2)\lambda\\,\mathbf{e}\mathbf{e}^\top\\) and
 /// \\(\mathbf{w}/\sigma_v = \sigma_v \mathbf{e}\\): the construction reduces
 /// algebraically to the marginal-variance deflation, so eigenvector-aligned
 /// splits agree to floating-point round-off (a few ulp; the multiplication
 /// order differs, so not bit-for-bit). The marginal spacing of the component means along
 /// \\(\mathbf{e}\\) is likewise unchanged in general —
-/// \\(\mathbf{e}^\top(\boldsymbol{\mu}_k - \boldsymbol{\mu}) = c_k d \sigma_v\\)
+/// \\(\mathbf{e}^\top(\boldsymbol{\mu}_i - \boldsymbol{\mu}) = m_i \sigma_v\\)
 /// — only their motion off \\(\mathbf{e}\\) differs.
 ///
-/// This is DeMars-style equal-weight splitting with **uniform spacing**,
-/// not the DeMars (2013) optimized splitting library that tabulates
-/// per-\\(K\\) \\((m_k, \sigma_k/\sigma)\\) pairs minimizing the
-/// \\(L^2\\) error between the source Gaussian and its mixture
-/// approximation. Uniform spacing preserves the first and second moments
-/// exactly (by construction) but allows non-zero higher-moment error
-/// that grows with \\(K\\); the optimized library reduces that
-/// higher-moment error at the cost of needing tabulated coefficients.
-/// For \\(K = 3\\) the two approaches are essentially identical; for
-/// \\(K \geq 5\\) they diverge slightly.
+/// # What the library buys
+///
+/// The library entry minimises the \\(L^2\\) distance between the
+/// standard normal and the mixture, among symmetric mixtures of its
+/// width carrying unit variance (Vittaldev & Russell 2016, with the
+/// variance constraint this crate's covariance contract adds). It
+/// replaces an equal-weight split with means at uniformly spaced
+/// multiples of \\(\sigma_v\\), which matched the first two moments and
+/// nothing else. The difference is in the tail, and it is large: writing
+/// the mixture's mass beyond \\(\Delta\sigma\\) along the split
+/// direction as a fraction of the parent's,
+///
+/// | \\(k\\) | split | \\(3\sigma\\) | \\(4\sigma\\) | \\(5\sigma\\) |
+/// |---|---|---|---|---|
+/// | 3 | uniform, equal weight | 0.066 | 1.1e-3 | 2.5e-6 |
+/// | 3 | library | 0.46 | 0.079 | 4.4e-3 |
+/// | 9 | uniform, equal weight | 1.6e-4 | 4.5e-11 | 4.8e-21 |
+/// | 9 | library | 1.01 | 0.25 | 1.6e-3 |
+/// | 15 | uniform, equal weight | 6.8e-7 | 4.3e-18 | 2.6e-35 |
+/// | 15 | library | 1.00 | 0.91 | 0.033 |
+///
+/// Under the uniform split the tail got *worse* as \\(k\\) rose, because
+/// every added component narrowed the shared width while the outermost
+/// mean barely moved. Under the library it improves.
+///
+/// The deep tail is still not reproduced at any \\(k\\): a mixture of
+/// Gaussians all narrower than the parent has a tail that decays faster
+/// than the parent's, whatever the weights. The library moves the
+/// crossover out, it does not remove it. A probability that depends on
+/// mass beyond about \\(5\sigma\\) is not a question a Gaussian mixture
+/// answers.
 ///
 /// # Errors
 ///
 /// - [`GaussianSplitError::InvalidK`] if `k == 0`.
+/// - [`GaussianSplitError::KAboveLibrary`] if `k` exceeds
+///   [`MAX_SPLIT_COMPONENTS`].
 /// - [`GaussianSplitError::InvalidDirection`] if `direction` is zero or
 ///   contains non-finite components.
 /// - [`GaussianSplitError::NonFiniteInput`] if `mean` or `cov` contains
@@ -187,7 +243,10 @@ pub fn split_gaussian<const N: usize>(
         return Ok(vec![(1.0, *mean, *cov)]);
     }
 
-    let weight = 1.0 / k as f64;
+    let entry = univariate_split(k).ok_or(GaussianSplitError::KAboveLibrary {
+        k,
+        max: MAX_SPLIT_COMPONENTS,
+    })?;
 
     let sigma_v_sq = mat_quadratic_form(&e, cov);
     if sigma_v_sq < 0.0 {
@@ -195,8 +254,9 @@ pub fn split_gaussian<const N: usize>(
     }
     if sigma_v_sq == 0.0 {
         // No spread along e: nothing to deflate and nothing to shift, and the
-        // 1/sigma_v_sq scaling below is undefined.
-        return Ok(vec![(weight, *mean, *cov); k]);
+        // 1/sigma_v_sq scaling below is undefined. The components still carry
+        // the library's weights, so the mixture stays normalized.
+        return Ok(entry.weights.iter().map(|w| (*w, *mean, *cov)).collect());
     }
     let sigma_v = sigma_v_sq.sqrt();
 
@@ -204,7 +264,7 @@ pub fn split_gaussian<const N: usize>(
     // only for c <= 1/(eᵀΣ⁻¹e), which the marginal variance eᵀΣe exceeds
     // unless e is an eigenvector of Σ.
     let w = mat_vec_mul(cov, &e);
-    let alpha = (k - 1) as f64 / k as f64 / sigma_v_sq;
+    let alpha = (1.0 - entry.sigma * entry.sigma) / sigma_v_sq;
     if !alpha.is_finite() {
         // sigma_v_sq is subnormal: the deflation scale overflows, and the
         // components would carry -inf/NaN entries.
@@ -217,18 +277,14 @@ pub fn split_gaussian<const N: usize>(
         }
     }
 
-    let offsets: Vec<f64> = (0..k).map(|i| i as f64 - (k - 1) as f64 / 2.0).collect();
-    let s: f64 = offsets.iter().map(|c| c * c).sum();
-    let d = ((k - 1) as f64 / s).sqrt();
-
     let mut components = Vec::with_capacity(k);
-    for offset in &offsets {
-        let shift = offset * d / sigma_v;
+    for (weight, m) in entry.weights.iter().zip(entry.means) {
+        let shift = m / sigma_v;
         let mut mean_k = *mean;
         for i in 0..N {
             mean_k[i] += shift * w[i];
         }
-        components.push((weight, mean_k, sub_cov));
+        components.push((*weight, mean_k, sub_cov));
     }
 
     Ok(components)
@@ -841,6 +897,50 @@ mod tests {
         }
     }
 
+    /// The three-component split is the library's, not the uniform
+    /// equal-weight geometry it replaced: weights 0.211/0.577/0.211
+    /// rather than three thirds, means at \\(\pm 1.128\sigma\\) rather
+    /// than \\(\pm\sigma\\), and a shared width of \\(0.679\sigma\\)
+    /// rather than \\(\sigma/\sqrt{3} = 0.577\sigma\\).
+    ///
+    /// The direction is an eigenvector of Σ, so w = Σe is parallel to e
+    /// and the numbers below are the univariate library's own, read off
+    /// the split without the Σe construction rotating them.
+    #[test]
+    fn split_gaussian_k3_carries_the_library_geometry() {
+        let m = [0.0, 0.0];
+        let c = [[4.0, 0.0], [0.0, 1.0]];
+        let d = [1.0, 0.0]; // sigma_v = 2
+        let comps = split_gaussian::<2>(&m, &c, &d, 3).unwrap();
+
+        assert!(
+            comps[1].0 - comps[0].0 > 0.2,
+            "the central weight {} does not stand above the outer {}",
+            comps[1].0,
+            comps[0].0
+        );
+        assert!((comps[0].0 - comps[2].0).abs() < 1e-15);
+        assert!((comps[0].0 + comps[1].0 + comps[2].0 - 1.0).abs() < 1e-15);
+
+        // Means at +-1.128 sigma_v, i.e. +-2.257 here, not +-2.
+        assert!(comps[1].1[0].abs() < 1e-15);
+        assert!(
+            (comps[2].1[0] - 2.0 * 1.128_427_913_490_078).abs() < 1e-12,
+            "outer mean {} is not the library's",
+            comps[2].1[0]
+        );
+        assert!((comps[0].1[0] + comps[2].1[0]).abs() < 1e-14);
+
+        // Shared width 0.6792801 sigma_v along the split direction; the
+        // orthogonal direction is untouched.
+        let width = comps[0].2[0][0].sqrt() / 2.0;
+        assert!(
+            (width - 0.679_280_1).abs() < 1e-6,
+            "component width {width} is not the library's"
+        );
+        assert!((comps[0].2[1][1] - 1.0).abs() < 1e-15);
+    }
+
     #[test]
     fn split_gaussian_unit_direction_invariant() {
         // Result should be invariant to the magnitude of the direction vector.
@@ -926,18 +1026,21 @@ mod tests {
         let tol = 1.0e-9;
         for k in [2, 3, 5] {
             let comps = split_gaussian::<6>(&mean, &cov, &dir, k).unwrap();
-            let kf = k as f64;
+            let s2 = {
+                let e = univariate_split(k).unwrap();
+                e.sigma * e.sigma
+            };
             for (idx, (_, _, c)) in comps.iter().enumerate() {
                 assert!(
                     mat_cholesky(c).is_some(),
                     "k = {k}, component {idx}: sub-covariance is not positive-definite"
                 );
-                // The theorem itself: Σ/K ⪯ Σ_k ⪯ Σ.
+                // The theorem itself: s²Σ ⪯ Σ_k ⪯ Σ.
                 let mut lower = *c;
                 let mut upper = cov;
                 for i in 0..6 {
                     for j in 0..6 {
-                        lower[i][j] -= cov[i][j] / kf;
+                        lower[i][j] -= cov[i][j] * s2;
                         upper[i][j] -= c[i][j];
                     }
                     lower[i][i] += tol;
@@ -945,19 +1048,19 @@ mod tests {
                 }
                 assert!(
                     mat_cholesky(&lower).is_some(),
-                    "k = {k}, component {idx}: Σ_k − Σ/K is not PSD"
+                    "k = {k}, component {idx}: Σ_k − s²Σ is not PSD"
                 );
                 assert!(
                     mat_cholesky(&upper).is_some(),
                     "k = {k}, component {idx}: Σ − Σ_k is not PSD"
                 );
-                // The split-direction marginal is exact: eᵀΣ_k e = σ_v²/K.
+                // The split-direction marginal is exact: eᵀΣ_k e = s²σ_v².
                 let sv_k = mat_quadratic_form(&dir, c);
                 let sv = mat_quadratic_form(&dir, &cov);
                 assert!(
-                    (sv_k - sv / kf).abs() <= 1e-12 * sv,
+                    (sv_k - sv * s2).abs() <= 1e-12 * sv,
                     "k = {k}, component {idx}: eᵀΣ_k e = {sv_k} vs {}",
-                    sv / kf
+                    sv * s2
                 );
             }
         }
@@ -989,7 +1092,7 @@ mod tests {
     #[test]
     fn split_gaussian_eigenvector_direction_reduces_to_marginal_deflation() {
         // Σ is diagonal, so e₁ is an exact eigenvector with λ = 9: w = Σe = λe
-        // and α wwᵀ = ((K−1)/K) λ eeᵀ, i.e. the marginal-variance deflation.
+        // and α wwᵀ = (1 − s²) λ eeᵀ, i.e. the marginal-variance deflation.
         // Expected values below are that analytic result; the routine reaches
         // them through a different multiplication order, so the tolerance is a
         // few ulp rather than bit equality (the values are O(10)).
@@ -997,13 +1100,22 @@ mod tests {
         let cov = [[4.0, 0.0, 0.0], [0.0, 9.0, 0.0], [0.0, 0.0, 16.0]];
         let dir = [0.0, 1.0, 0.0];
         let comps = split_gaussian::<3>(&mean, &cov, &dir, 3).unwrap();
-        // σ_v² = 9 and (K−1)/K = 2/3, so the (1,1) entry loses 6.
-        let expected_cov = [[4.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 16.0]];
-        // c = (−1, 0, 1), S = 2, d = 1, σ_v = 3: shifts of ∓3 along e₁.
-        let expected_means = [[1.0, -5.0, 0.5], [1.0, -2.0, 0.5], [1.0, 1.0, 0.5]];
+        let entry = univariate_split(3).unwrap();
+        // σ_v² = 9, so the (1,1) entry keeps 9s².
+        let expected_cov = [
+            [4.0, 0.0, 0.0],
+            [0.0, 9.0 * entry.sigma * entry.sigma, 0.0],
+            [0.0, 0.0, 16.0],
+        ];
+        // σ_v = 3, so the means step by 3·m_i along e₁.
+        let expected_means: Vec<[f64; 3]> = entry
+            .means
+            .iter()
+            .map(|m| [1.0, -2.0 + 3.0 * m, 0.5])
+            .collect();
         assert_eq!(comps.len(), 3);
         for (idx, (w, m, c)) in comps.iter().enumerate() {
-            assert!((w - 1.0 / 3.0).abs() < 1e-15);
+            assert!((w - entry.weights[idx]).abs() < 1e-15);
             for i in 0..3 {
                 assert!(
                     (m[i] - expected_means[idx][i]).abs() < 1e-13,
@@ -1033,8 +1145,9 @@ mod tests {
         for k in [2, 3, 5] {
             let comps = split_gaussian::<3>(&mean, &cov, &dir, k).unwrap();
             assert_eq!(comps.len(), k);
-            for (w, m, c) in &comps {
-                assert!((w - 1.0 / k as f64).abs() < 1e-15);
+            let entry = univariate_split(k).unwrap();
+            for (idx, (w, m, c)) in comps.iter().enumerate() {
+                assert!((w - entry.weights[idx]).abs() < 1e-15);
                 assert_eq!(*m, mean);
                 assert_eq!(*c, cov);
             }
@@ -1075,7 +1188,7 @@ mod tests {
     #[test]
     fn split_gaussian_mean_offsets_follow_sigma_e() {
         // Component means step along w = Σe, and their projections onto e are
-        // the unchanged c_k d σ_v marginal spacing.
+        // the library's m_i σ_v marginal spacing.
         let cov = ill_conditioned_6x6();
         let mean = [1.0, -2.0, 3.0, -0.5, 0.25, 4.0];
         let dir = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
@@ -1090,12 +1203,10 @@ mod tests {
         let sigma_v = (0..6).map(|i| dir[i] * w[i]).sum::<f64>().sqrt();
         for k in [2, 3, 5] {
             let comps = split_gaussian::<6>(&mean, &cov, &dir, k).unwrap();
-            let offsets: Vec<f64> = (0..k).map(|i| i as f64 - (k - 1) as f64 / 2.0).collect();
-            let s: f64 = offsets.iter().map(|c| c * c).sum();
-            let d = ((k - 1) as f64 / s).sqrt();
+            let entry = univariate_split(k).unwrap();
             for (idx, (_, m, _)) in comps.iter().enumerate() {
                 for i in 0..6 {
-                    let expected = offsets[idx] * d * w[i] / sigma_v;
+                    let expected = entry.means[idx] * w[i] / sigma_v;
                     assert!(
                         (m[i] - mean[i] - expected).abs() <= 1e-12 * expected.abs().max(1.0),
                         "k = {k}, component {idx}: offset[{i}] = {} vs {expected}",
@@ -1103,7 +1214,7 @@ mod tests {
                     );
                 }
                 let proj: f64 = (0..6).map(|i| dir[i] * (m[i] - mean[i])).sum();
-                let expected = offsets[idx] * d * sigma_v;
+                let expected = entry.means[idx] * sigma_v;
                 assert!(
                     (proj - expected).abs() <= 1e-12 * sigma_v,
                     "k = {k}, component {idx}: eᵀ(μ_k − μ) = {proj} vs {expected}"
