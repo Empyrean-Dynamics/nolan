@@ -13,12 +13,12 @@ mod fit;
 use fit::{
     Constraint, FitError, MAX_K, MIN_K, SHIPPED_RULE, SigmaRule, SplitFit, continued_seed,
     cost_gradient, expand, fit_best, free_parameters, generator_config, l2_distance,
-    mixture_variance, normal_upper_tail, tail_ratio, uniform_seed,
+    mixture_variance, tail_ratio, uniform_seed,
 };
 use hyperjet::jets::Jet1;
 use hyperjet::statistics::multivariate::GaussianSplitError;
 use hyperjet::statistics::{
-    MAX_SPLIT_COMPONENTS, MIN_SPLIT_COMPONENTS, split_gaussian, univariate_split,
+    MAX_SPLIT_COMPONENTS, MIN_SPLIT_COMPONENTS, normal_sf, split_gaussian, univariate_split,
 };
 use std::f64::consts::PI;
 
@@ -418,9 +418,9 @@ fn recurse(
 fn mixture_tail_ratio(mixture: &[(f64, f64, f64)], delta: f64) -> f64 {
     let mix: f64 = mixture
         .iter()
-        .map(|(w, m, s)| w * normal_upper_tail((delta - m) / s))
+        .map(|(w, m, s)| w * normal_sf((delta - m) / s))
         .sum();
-    mix / normal_upper_tail(delta)
+    mix / normal_sf(delta)
 }
 
 /// Recursion along one direction made the replaced split worse, not
@@ -751,29 +751,6 @@ fn the_closed_form_gradient_agrees_with_forward_mode_differentiation() {
         })+};
     }
     check!(3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
-}
-
-/// The tail integrator the measurements rest on, against values the
-/// crate does not compute anywhere else.
-#[test]
-fn the_tail_integrator_is_accurate_where_normal_cdf_is_not() {
-    // Q(z) for the standard normal, to 15 significant figures.
-    let known: [(f64, f64); 7] = [
-        (0.0, 0.5),
-        (1.0, 1.58655253931457e-1),
-        (2.0, 2.27501319481792e-2),
-        (3.0, 1.34989803163009e-3),
-        (4.0, 3.16712418331200e-5),
-        (5.0, 2.86651571879194e-7),
-        (8.0, 6.22096057427178e-16),
-    ];
-    for (z, q) in known {
-        let got = normal_upper_tail(z);
-        assert!(
-            (got - q).abs() <= 1e-13 * q.max(1e-16),
-            "Q({z}) = {got}, expected {q}"
-        );
-    }
 }
 
 // ── The public surface ──────────────────────────────────────────────

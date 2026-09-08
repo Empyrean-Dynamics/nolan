@@ -367,12 +367,26 @@ primitives:
 
 ```rust,ignore
 use hyperjet::statistics::{ln_gamma, upper_inc_gamma_reg, chi2_sf,
-                         normal_pdf, normal_cdf};
+                         normal_pdf, normal_cdf, normal_sf,
+                         normal_cdf_difference};
 
 let p = chi2_sf(reduced_chi2 * dof as f64, dof);  // χ² survival
 let z = (x - mu) / sigma;
-let prob = normal_cdf(z);
+let prob = normal_cdf(z);      // Φ(z), the lower tail
+let exceedance = normal_sf(z); // Q(z) = 1 - Φ(z), the upper tail
+let inside = normal_cdf_difference(hi, lo); // Φ(hi) - Φ(lo)
 ```
+
+`normal_cdf`, `normal_sf` and `normal_pdf` are accurate to a RELATIVE
+1e-14 over the whole range where their result is a normal double, with
+no cutoff: `normal_sf(30.0)` is 4.9067e-198, not zero. Past about 37.5σ
+the result is subnormal and only the spacing of the subnormals is left,
+which is where that guarantee stops. Ask `normal_sf` for an upper tail
+rather than forming `1.0 - normal_cdf(x)`, which has no significant
+figures left beyond 8σ and none at all beyond 8.3σ. Ask
+`normal_cdf_difference` for the probability of a bracket: written out,
+`normal_cdf(37.0) - normal_cdf(30.0)` is zero and the function returns
+4.9067e-198.
 
 `hyperjet::statistics::multivariate` ships N-dimensional Gaussian primitives
 generic over the state dimension:

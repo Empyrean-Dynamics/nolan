@@ -97,6 +97,7 @@
 use hyperjet::optimization::lm::{
     CostProblem, LMConfig, LMError, SystemEvaluation, SystemProblem, solve_system,
 };
+use hyperjet::statistics::normal_sf;
 use std::f64::consts::PI;
 
 /// The smallest component count the library tabulates.
@@ -314,39 +315,9 @@ pub fn tail_ratio(weights: &[f64], means: &[f64], sigma: f64, delta: f64) -> f64
     let mix: f64 = weights
         .iter()
         .zip(means)
-        .map(|(a, m)| a * normal_upper_tail((delta - m) / sigma))
+        .map(|(a, m)| a * normal_sf((delta - m) / sigma))
         .sum();
-    mix / normal_upper_tail(delta)
-}
-
-/// \\(Q(z) = 1 - \Phi(z)\\) to full double precision, by the continued
-/// fraction of Abramowitz & Stegun 26.2.14 in the tail and the series of
-/// 26.2.11 near the origin. The crate's `normal_cdf` carries an absolute
-/// error of \\(7.5\times 10^{-8}\\), which says nothing at all about a
-/// tail of \\(10^{-12}\\).
-pub fn normal_upper_tail(z: f64) -> f64 {
-    if z < 0.0 {
-        return 1.0 - normal_upper_tail(-z);
-    }
-    let phi = (-0.5 * z * z).exp() / (2.0 * PI).sqrt();
-    if z < 2.0 {
-        // Series: Phi(z) - 1/2 = phi(z) * sum_{n>=0} z^(2n+1) / (1*3*...*(2n+1)).
-        let mut term = z;
-        let mut sum = z;
-        let mut n = 1.0;
-        while term.abs() > 1e-20 * sum.abs() {
-            term *= z * z / (2.0 * n + 1.0);
-            sum += term;
-            n += 1.0;
-        }
-        return 0.5 - phi * sum;
-    }
-    // Continued fraction Q(z) = phi(z) / (z + 1/(z + 2/(z + 3/(z + ...)))).
-    let mut f = 0.0_f64;
-    for n in (1..=400_usize).rev() {
-        f = n as f64 / (z + f);
-    }
-    phi / (z + f)
+    mix / normal_sf(delta)
 }
 
 // ── Parameterisation ────────────────────────────────────────────────

@@ -31,8 +31,24 @@
 //!
 //! # References
 //!
-//! Lawson & Hanson 1974; Björck 1996 (weighted / "stiff" least squares);
-//! Van Loan 1985; Bierman 1977; Moré 1978. See `lang/REFERENCES.md`.
+//! - Lawson, C.L. & Hanson, R.J., *Solving Least Squares Problems*,
+//!   Prentice-Hall, 1974 (SIAM Classics in Applied Mathematics 15, 1995).
+//!   Why forming the normal equations squares the condition number and
+//!   why a Householder QR does not.
+//! - Björck, Å., *Numerical Methods for Least Squares Problems*, SIAM,
+//!   1996, <https://doi.org/10.1137/1.9781611971484>. Weighted and
+//!   "stiff" least squares, where row weights span many orders of
+//!   magnitude.
+//! - Van Loan, C.F., "On the Method of Weighting for Equality-Constrained
+//!   Least-Squares Problems", SIAM J. Numer. Anal. **22**(5), 1985,
+//!   pp. 851-864, <https://doi.org/10.1137/0722051>.
+//! - Bierman, G.J., *Factorization Methods for Discrete Sequential
+//!   Estimation*, Academic Press, 1977 (Dover reprint 2006). Square-root
+//!   filtering, of which the row-wise update here is the measurement form.
+//! - Moré, J.J., "The Levenberg-Marquardt Algorithm: Implementation and
+//!   Theory", in Watson, G.A. (ed.), *Numerical Analysis*, Lecture Notes
+//!   in Mathematics **630**, Springer, 1978, pp. 105-116,
+//!   <https://doi.org/10.1007/BFb0067700>. The damping term as extra rows.
 
 /// Running upper-triangular factor \\(R\\) and transformed right-hand side
 /// \\(Q^\top b\\), updated one row at a time.
