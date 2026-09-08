@@ -25,13 +25,47 @@
 
 use std::f64::consts::PI;
 
+/// Below this argument the Lanczos sum is reached through the recurrence
+/// rather than directly.
+///
+/// \\(x - 1\\) is what the Lanczos form needs, and for
+/// \\(x < 2^{-54}\\) that rounds to exactly \\(-1\\), which puts a zero
+/// in the first denominator of the sum and sends the result to infinity
+/// — at \\(x = 10^{-300}\\), where the true value is an ordinary
+/// \\(690.78\\). The recurrence removes that, and it also removes the
+/// accuracy loss well above it: the direct form is wrong by
+/// \\(2.7\times10^{-10}\\) relative at \\(x = 10^{-8}\\).
+///
+/// The threshold is 0.5 and not lower on purpose. Every argument the
+/// crate itself supplies is \\(k/2 \ge 0.5\\) — [`chi2_sf`] with
+/// \\(k = 1\\) gives exactly 0.5 — so no value this crate computes
+/// moves.
+const LN_GAMMA_RECURRENCE_BELOW: f64 = 0.5;
+
 /// Natural logarithm of the gamma function via the Lanczos approximation
-/// (g = 7, n = 9 coefficients).
+/// (g = 7, n = 9 coefficients), with the recurrence
+/// \\(\ln\Gamma(x) = \ln\Gamma(x+1) - \ln x\\) below
+/// \\(x = 1/2\\).
 ///
-/// Domain: `x > 0` (the principal branch). For `x` near zero or negative,
-/// the reflection formula should be used externally if needed.
+/// Domain: \\(x \ge 0\\). Returns \\(+\infty\\) at 0 and at
+/// \\(+\infty\\), and `f64::NAN` for a negative or NaN argument. For
+/// negative arguments the reflection formula should be used externally.
 ///
-/// Accuracy: ~1e-15 relative for `x > 0.5`.
+/// # Accuracy
+///
+/// Relative error under \\(2\times10^{-14}\\) everywhere on the
+/// domain, with one stated exception. The worst found on a dense sweep
+/// is \\(1.07\times10^{-14}\\), at \\(x = 2.592\\). \\(\ln\Gamma\\) has zeros at \\(x = 1\\) and
+/// \\(x = 2\\), and no form of this kind can be relatively accurate
+/// beside a zero: the absolute error stays near \\(10^{-15}\\) while the
+/// function passes through nothing. Measured worst relative errors are
+/// \\(1.7\times10^{-12}\\) at \\(x = 1.00068\\) and
+/// \\(1.0\times10^{-12}\\) at \\(x = 1.99768\\), and `ln_gamma(1.0)`
+/// returns \\(-8.9\times10^{-16}\\) rather than zero. Away from those
+/// two neighbourhoods the worst is \\(1.07\times10^{-14}\\) below
+/// \\(x = 10\\) and \\(6.0\times10^{-16}\\) beyond it. Callers who need
+/// the exponential of this — as [`upper_inc_gamma_reg`] does — care
+/// about the ABSOLUTE error, which is \\(10^{-15}\\) throughout.
 ///
 /// # Examples
 ///
@@ -45,8 +79,23 @@ use std::f64::consts::PI;
 /// assert!((ln_gamma(5.0) - (24.0_f64).ln()).abs() < 1e-12);
 /// // Γ(0.5) = √π.
 /// assert!((ln_gamma(0.5) - PI.sqrt().ln()).abs() < 1e-12);
+/// // Small arguments are ordinary numbers, not infinities.
+/// assert!((ln_gamma(1e-300) - 690.775_527_898_213_7).abs() < 1e-12);
 /// ```
 pub fn ln_gamma(x: f64) -> f64 {
+    if x.is_nan() || x < 0.0 {
+        return f64::NAN;
+    }
+    if x == 0.0 || x.is_infinite() {
+        return f64::INFINITY;
+    }
+    if x < LN_GAMMA_RECURRENCE_BELOW {
+        // Gamma(x) = Gamma(x + 1) / x, so the sum is evaluated where its
+        // argument is safely above the cliff and the division becomes a
+        // subtraction of logarithms. One level of recursion only, since
+        // x + 1 is at least 1.
+        return ln_gamma(x + 1.0) - x.ln();
+    }
     const COEFFS: [f64; 9] = [
         0.999_999_999_999_809_9,
         676.520_368_121_885_1,
@@ -68,13 +117,113 @@ pub fn ln_gamma(x: f64) -> f64 {
     0.5 * (2.0 * PI).ln() + (x + 0.5) * t.ln() - t + sum.ln()
 }
 
+/// The smallest \\(a\\) this routine will answer for.
+///
+/// Below the seam it computes \\(Q = 1 - P\\), and for small \\(a\\)
+/// the true \\(Q\\) is itself of order \\(a\\): at \\(a = 10^{-16}\\),
+/// \\(x = 1/2\\) it is \\(7\times10^{-17}\\), so \\(P\\) rounds to
+/// exactly one and the subtraction returns nothing at all. The
+/// measured relative error of that arm runs \\(6\times10^{-11}\\) at
+/// \\(a = 10^{-4}\\) and 282 at \\(a = 10^{-16}\\) — a plausible
+/// number, silently wrong, which is the one outcome this crate does not
+/// ship.
+///
+/// Getting it right needs \\(Q\\) formed directly rather than by
+/// complement:
+/// \\[
+///   Q(a,x) = -\operatorname{expm1}(u) - e^{u} a T,
+///   \qquad u = a\ln x - \ln\Gamma(1+a),
+/// \\]
+/// whose leading terms are both \\(O(a)\\) and neither subtracts from
+/// one. It needs \\(\ln\Gamma(1+a)\\) to RELATIVE accuracy for small
+/// \\(a\\), which is a different routine from [`ln_gamma`] — that one
+/// passes through a zero at 1 and is accurate there only in absolute
+/// terms. Nothing in this crate reaches below the threshold, so the
+/// arithmetic is refused rather than approximated: [`chi2_sf`] supplies
+/// \\(a = k/2\\), whose smallest value is exactly this threshold at
+/// \\(k = 1\\).
+///
+/// The refusal is a NaN and not a `Result`, which is a deliberate
+/// choice and a defensible one only while the refused regimes stay
+/// unreachable: this module's scalar surface is uniformly `f64` in and
+/// `f64` out, `f64::NAN` is already how every function in it reports an
+/// argument it will not answer for, and it is what the C library does
+/// for the same reason. The cost is that a NaN propagates silently
+/// until something checks it, so a caller's only real defence is to
+/// test its own argument against this constant first — which is why it
+/// is exported. If a caller ever does need \\(a < 1/2\\), that
+/// argument is void and the signature should change rather than the
+/// threshold move.
+pub const UPPER_INC_GAMMA_MIN_A: f64 = 0.5;
+
 /// Regularized **upper** incomplete gamma function `Q(a, x) = Γ(a, x) / Γ(a) = 1 - P(a, x)`.
 ///
-/// Domain: `a > 0` and `x ≥ 0`. Returns `f64::NAN` for invalid inputs.
+/// Domain: `a ≥ 0.5` ([`UPPER_INC_GAMMA_MIN_A`]) and `x ≥ 0`. Returns
+/// `f64::NAN` outside it, including for an `a` that is positive but
+/// below the threshold — see that constant for why the small-`a` regime
+/// is refused rather than answered.
+///
+/// Also returns `f64::NAN` if either half fails to converge within its
+/// iteration ceiling. That ceiling follows `a`, and no argument tested
+/// up to `a = 1e6` comes within a factor of two of it, but a truncated
+/// sum returned as a probability would be a wrong answer wearing the
+/// clothes of a right one.
 ///
 /// Implementation: series for `x < a + 1` (faster convergence in that
 /// regime), Lentz continued fraction for `x ≥ a + 1`. Standard
 /// NR §6.2 split.
+///
+/// # Accuracy
+///
+/// Relative error under \\(10^{-12}\\) for \\(a \le 100\\); the worst
+/// measured across \\(a \in [0.5, 100]\\) and
+/// \\(x \in [10^{-4}, 800]\\) is \\(1.8\times10^{-13}\\), at
+/// \\(a = 100\\).
+///
+/// Beyond that there is no flat bound to give, and the mechanism below
+/// is the contract instead: the error is at most
+/// \\(\varepsilon \max(x,\, a \ln x)\\), which a caller can evaluate
+/// for its own arguments. Measured at \\(x = a\\), which is
+/// \\(\chi^2\\) at a reduced statistic of one:
+///
+/// | \\(a\\) | relative error | the bound above |
+/// |---|---|---|
+/// | \\(10^{5}\\) | \\(1.4\times10^{-10}\\) | \\(2.6\times10^{-10}\\) |
+/// | \\(10^{6}\\) | \\(6.8\times10^{-10}\\) | \\(3.1\times10^{-9}\\) |
+/// | \\(10^{8}\\) | \\(2.6\times10^{-7}\\) | \\(4.1\times10^{-7}\\) |
+/// | \\(10^{10}\\) | \\(2.3\times10^{-5}\\) | \\(5.1\times10^{-5}\\) |
+/// | \\(10^{12}\\) | \\(2.0\times10^{-3}\\) | \\(6.1\times10^{-3}\\) |
+/// | \\(10^{14}\\) | \\(1.8\times10^{-1}\\) | \\(7.2\times10^{-1}\\) |
+///
+/// So the result carries fewer than six significant figures above
+/// roughly \\(a = 10^{8}\\) and none at all by \\(10^{14}\\), where it
+/// returns 0.59 for a true 0.5. It is NOT refused there — it is still a
+/// probability, merely a wrong one — and this is the reason the bound
+/// is published as a formula rather than a number. Past
+/// \\(a \approx 3.7\times10^{15}\\) the value leaves the unit interval
+/// altogether and the exit check turns it into a NaN.
+///
+/// The error is set by the largest intermediate in the exponent
+/// \\(-x + a\ln x - \ln\Gamma(a)\\), not by the exponent itself. At
+/// \\(a = 100,\ x = 198\\) the three terms are \\(-198\\),
+/// \\(+529.2\\) and \\(-359.1\\) and their sum is \\(-27.9\\), so three
+/// roundings of a quantity near 529 give the \\(1.7\times10^{-13}\\)
+/// measured there. It therefore degrades as
+/// \\(\varepsilon \max(x,\, a\ln x)\\) and not as anything about the
+/// answer. This is the same mechanism [`normal_pdf`] avoids by splitting
+/// its exponent; the same treatment would work here and has not been
+/// applied, because no caller in this crate reaches an \\(a\\) where it
+/// matters.
+///
+/// The step across the internal seam at \\(x = a + 1\\), measured over
+/// one unit in the last place, grows with \\(a\\) for the same reason
+/// and at the same rate: under \\(10^{-14}\\) for \\(a \le 10\\),
+/// \\(2.3\times10^{-14}\\) at \\(a = 50\\), \\(2.3\times10^{-13}\\)
+/// at \\(a = 100\\) and \\(7.1\times10^{-12}\\) at \\(a = 5000\\). It
+/// is not a discontinuity of the split: the two representations agree
+/// to within what either of them can resolve there. Every \\(a\\) the
+/// crate itself supplies is at most 7.5, where the step is under
+/// \\(5\times10^{-15}\\).
 ///
 /// # Examples
 ///
@@ -87,26 +236,65 @@ pub fn ln_gamma(x: f64) -> f64 {
 /// assert!((upper_inc_gamma_reg(1.0, 2.5) - (-2.5_f64).exp()).abs() < 1e-12);
 /// ```
 pub fn upper_inc_gamma_reg(a: f64, x: f64) -> f64 {
-    if a <= 0.0 || x < 0.0 || x.is_nan() || a.is_nan() {
+    if a < UPPER_INC_GAMMA_MIN_A || x < 0.0 || x.is_nan() || a.is_nan() {
         return f64::NAN;
     }
     if x == 0.0 {
         return 1.0;
     }
-    if x < a + 1.0 {
+    let q = if x < a + 1.0 {
         1.0 - lower_gamma_series(a, x)
     } else {
         upper_gamma_cf(a, x)
+    };
+    // Q is a probability. Anything else is arithmetic that has come
+    // apart — at a = 1e15 the series returned -18.23 — and a number
+    // outside the unit interval must not be handed back as one. This
+    // also carries through the NaN either half returns on exhaustion.
+    //
+    // It is a backstop and not a guarantee: a value that is merely
+    // WRONG stays inside the interval and is returned. See the accuracy
+    // section for what the result is worth at large `a`.
+    if !(0.0..=1.0).contains(&q) {
+        return f64::NAN;
     }
+    q
 }
 
 /// Shared convergence parameters for the incomplete-gamma series and
 /// continued-fraction halves. They MUST stay identical between the two:
 /// [`upper_inc_gamma_reg`] switches representation at `x = a + 1`, and
 /// differing tolerances would make `Q(a, x)` discontinuous across that
-/// seam.
-const GAMMA_MAX_ITER: usize = 200;
+/// seam. That applies to the ceiling below as much as to this
+/// tolerance, which is why one function serves both.
 const GAMMA_EPS: f64 = 1e-15;
+
+/// How many terms or levels either half may take before it gives up.
+///
+/// A fixed 200 was not enough and the shortfall was silent. The series
+/// needs about \\(9\sqrt{a}\\) terms at \\(x = a\\) — which is
+/// \\(\chi^2\\) at a reduced statistic of one, the commonest query a
+/// fit makes — so 200 first binds at \\(a = 576.5\\) and by
+/// \\(a = 50000\\) the truncated answer was 21% wrong. Measured terms
+/// needed against this rule:
+///
+/// | \\(a\\) | series | fraction | this rule |
+/// |---|---|---|---|
+/// | 100 | 89 | 39 | 320 |
+/// | 5000 | 484 | 152 | 1049 |
+/// | 50000 | 1101 | 328 | 2884 |
+/// | \\(10^6\\) | 1724 | 894 | 12200 |
+///
+/// The margin is never within 40% of binding: it is 1.65 at
+/// \\(a = 10^{6}\\), its tightest point on that sweep, and 1.74 at
+/// \\(a = 10^{9}\\). The mechanism gives the same answer — the series
+/// needs about \\(8.31\sqrt a\\) terms against the \\(12\sqrt a\\)
+/// this allows — so the ratio tends to 1.44 rather than closing.
+/// Exhaustion is still an error rather than a truncation, because a
+/// rule fitted to a sweep is not a proof.
+fn gamma_max_iter(a: f64) -> usize {
+    200 + (12.0 * a.sqrt()).ceil() as usize
+}
 
 /// The prefactor \\(e^{-x + a \ln x - \ln\Gamma(a)}\\) common to both
 /// incomplete-gamma halves.
@@ -121,12 +309,17 @@ fn gamma_prefactor(a: f64, x: f64) -> f64 {
 fn lower_gamma_series(a: f64, x: f64) -> f64 {
     let mut sum = 1.0 / a;
     let mut term = 1.0 / a;
-    for n in 1..GAMMA_MAX_ITER {
+    let mut converged = false;
+    for n in 1..gamma_max_iter(a) {
         term *= x / (a + n as f64);
         sum += term;
         if term.abs() < GAMMA_EPS * sum.abs() {
+            converged = true;
             break;
         }
+    }
+    if !converged {
+        return f64::NAN;
     }
     sum * gamma_prefactor(a, x)
 }
@@ -140,8 +333,9 @@ fn upper_gamma_cf(a: f64, x: f64) -> f64 {
     let mut f = TINY;
     let mut c = TINY;
     let mut d = 0.0_f64;
+    let mut converged = false;
 
-    for n in 0..GAMMA_MAX_ITER {
+    for n in 0..gamma_max_iter(a) {
         let an = if n == 0 {
             1.0
         } else {
@@ -161,8 +355,12 @@ fn upper_gamma_cf(a: f64, x: f64) -> f64 {
         let delta = c * d;
         f *= delta;
         if (delta - 1.0).abs() < GAMMA_EPS {
+            converged = true;
             break;
         }
+    }
+    if !converged {
+        return f64::NAN;
     }
 
     f * gamma_prefactor(a, x)
@@ -176,7 +374,25 @@ fn upper_gamma_cf(a: f64, x: f64) -> f64 {
 /// - `f64::NAN` if `x` is NaN or `k == 0`
 /// - `1.0` if `x ≤ 0` (the survival function is 1 to the left of the
 ///   support)
+/// - `0.0` at `x = +∞`, the limit of the survival function, matching
+///   [`normal_sf`] at its own infinity rather than returning the NaN
+///   that `-∞ + ∞` in the exponent would otherwise produce
 /// - `upper_inc_gamma_reg(k/2, x/2)` otherwise
+///
+/// # Accuracy
+///
+/// Relative error under \\(5\times10^{-13}\\) across \\(k \le 15\\)
+/// and \\(x\\) from \\(10^{-8}\\) to 2000, measured against
+/// arbitrary-precision references; the worst found on a dense sweep of
+/// that range is \\(1.1\times10^{-13}\\), near \\(k = 12,\ x = 1167\\).
+/// The grid the test suite carries is coarser and finds
+/// \\(5.3\times10^{-14}\\) at the nearest point it holds.
+///
+/// Outside that range it inherits the mechanism described at
+/// [`upper_inc_gamma_reg`] and degrades with the arguments rather than
+/// with the answer: \\(7.7\times10^{-11}\\) at
+/// \\(k = x = 10^{5}\\). No single constant covers the whole domain,
+/// so both are stated.
 ///
 /// # Examples
 ///
@@ -196,6 +412,12 @@ pub fn chi2_sf(x: f64, k: usize) -> f64 {
     }
     if x <= 0.0 {
         return 1.0;
+    }
+    if x.is_infinite() {
+        // The limit, and not what the arithmetic below would give: the
+        // prefactor forms `-x + a ln x`, which at an infinite `x` is
+        // `-inf + inf` and therefore NaN.
+        return 0.0;
     }
     let a = k as f64 / 2.0;
     let z = x / 2.0;
@@ -806,39 +1028,6 @@ mod tests {
     }
 
     #[test]
-    fn chi2_sf_scipy_reference_values() {
-        // Reference values from scipy.stats.chi2.sf or analytical
-        // closed forms where available:
-        //   χ²(1): SF(x) = erfc(√(x/2)) → scipy
-        //   χ²(2): SF(x) = exp(-x/2) — exact closed form
-        //   χ²(k>2): scipy reference
-        //
-        // Tolerance 1e-4 relative: at small `a` (e.g., k=1 → a=0.5),
-        // the series/continued-fraction transition has known limited
-        // accuracy (~1e-5 absolute in the SF tail) — well within the
-        // tolerance typical of χ² acceptance gating in nonlinear
-        // least-squares solvers. Tighten if/when we switch to a
-        // higher-precision incomplete-gamma routine.
-        let cases = [
-            // (x, k, expected_sf)
-            (1.0_f64, 1, 0.317_310_507_862_915_4), // erfc(√0.5)
-            (3.84, 1, 0.050_044_106_595_511_84),   // erfc(√1.92) — 95% critical
-            (1.0, 2, (-0.5_f64).exp()),            // exp(-0.5) exactly
-            (5.99, 2, (-2.995_f64).exp()),         // exp(-2.995) exactly — 95% critical
-            (1.0, 6, 0.985_612_322_385_122_4),     // scipy
-            (12.59, 6, 0.050_028_851_651_797_8),   // 95% critical — algorithm vs scipy 5e-5
-        ];
-        for (x, k, expected) in cases {
-            let got = chi2_sf(x, k);
-            let rel = (got - expected).abs() / expected;
-            assert!(
-                rel < 1e-4,
-                "(x={x}, k={k}): got {got}, expected {expected}, rel {rel}"
-            );
-        }
-    }
-
-    #[test]
     fn chi2_sf_large_x_underflows_smoothly() {
         // For x >> k, SF should be vanishingly small but non-negative.
         for &k in &[1_usize, 6] {
@@ -848,6 +1037,251 @@ mod tests {
                 assert!(sf < 1e-15);
             }
         }
+    }
+
+    /// The survival function at an infinite argument is its limit. The
+    /// arithmetic underneath would not get there on its own: the
+    /// prefactor forms `-x + a ln x`, which is `-inf + inf`.
+    #[test]
+    fn chi2_sf_at_infinity_is_zero_and_not_a_non_number() {
+        for &k in &[1_usize, 2, 6, 15] {
+            assert_eq!(chi2_sf(f64::INFINITY, k), 0.0, "k = {k}");
+        }
+        // The same question asked of the normal tail, for consistency.
+        assert_eq!(normal_sf(f64::INFINITY), 0.0);
+    }
+
+    /// Small arguments used to return infinity: `x - 1.0` rounds to
+    /// exactly -1 below 2^-54, which puts a zero in the first
+    /// denominator of the Lanczos sum. The true values are ordinary
+    /// doubles and are now returned.
+    #[test]
+    fn ln_gamma_is_finite_at_small_arguments() {
+        // Correctly rounded, from tools/normal_reference_table.py.
+        let cases = [
+            (1e-300_f64, 690.775_527_898_213_7),
+            (1e-100, 230.258_509_299_404_58),
+            (5.551_115_123_125_783e-17, 37.429_947_750_237_05),
+            (1e-16, 36.841_361_487_904_734),
+            (1e-8, 18.420_680_738_180_21),
+        ];
+        for (x, expected) in cases {
+            let got = ln_gamma(x);
+            assert!(got.is_finite(), "ln Γ({x}) returned {got}");
+            let rel = (got - expected).abs() / expected;
+            assert!(
+                rel < 1e-14,
+                "ln Γ({x}) = {got}, expected {expected}, rel {rel}"
+            );
+        }
+        // The recurrence changes nothing at or above its threshold, so
+        // every value this crate computes for itself is untouched. The
+        // smallest argument the crate supplies is k/2 = 0.5 at k = 1.
+        assert!((ln_gamma(0.5) - PI.sqrt().ln()).abs() < 1e-15);
+        assert!((ln_gamma(1.5) - (0.5 * PI.sqrt()).ln()).abs() < 1e-15);
+    }
+
+    #[test]
+    fn ln_gamma_edges_are_named() {
+        assert_eq!(ln_gamma(0.0), f64::INFINITY);
+        assert_eq!(ln_gamma(f64::INFINITY), f64::INFINITY);
+        assert!(ln_gamma(-1.0).is_nan());
+        assert!(ln_gamma(-0.5).is_nan());
+        assert!(ln_gamma(f64::NAN).is_nan());
+    }
+
+    /// The small-`a` regime is refused rather than answered, and the
+    /// refusal is by name at a stated threshold.
+    ///
+    /// The routine forms `Q = 1 - P` below its seam, and for small `a`
+    /// the true `Q` is itself of order `a`, so the subtraction returns
+    /// nothing: at a = 1e-16 it was 282 times wrong, silently, inside a
+    /// domain documented as `a > 0`.
+    #[test]
+    fn a_small_shape_parameter_is_refused_and_not_approximated() {
+        for &a in &[1e-16_f64, 1e-12, 1e-8, 1e-4, 0.01, 0.1, 0.25, 0.4999] {
+            for &x in &[1e-6_f64, 0.5, 1.0, 2.0] {
+                let got = upper_inc_gamma_reg(a, x);
+                assert!(got.is_nan(), "Q({a}, {x}) returned {got} below the domain");
+            }
+        }
+        // The threshold itself answers, on both sides of its seam, and
+        // it is exactly the smallest `a` that `chi2_sf` can supply.
+        assert_eq!(UPPER_INC_GAMMA_MIN_A, 0.5);
+        for &x in &[0.001_f64, 0.4, 1.4999, 1.50001, 20.0] {
+            assert!(
+                upper_inc_gamma_reg(UPPER_INC_GAMMA_MIN_A, x).is_finite(),
+                "Q(0.5, {x}) should be answered"
+            );
+        }
+        assert!(chi2_sf(1.0, 1).is_finite());
+    }
+
+    /// Which branch an argument takes is not left to arithmetic
+    /// coincidence. An earlier version of this suite believed it was
+    /// probing the series at a = 1e-16 while `a + 1` rounded to exactly
+    /// 1.0 and sent it to the fraction instead, so the arm that was
+    /// broken was never exercised.
+    #[test]
+    fn the_branches_are_reached_where_the_tests_believe_they_are() {
+        for &a in &[0.5_f64, 1.0, 7.5, 100.0, 5000.0] {
+            let seam = a + 1.0;
+            let below = seam - seam * f64::EPSILON;
+            assert!(
+                below < seam,
+                "a = {a}: the series probe is not below the seam"
+            );
+            let series_side = upper_inc_gamma_reg(a, below);
+            let fraction_side = upper_inc_gamma_reg(a, seam);
+            assert!(series_side.is_finite() && fraction_side.is_finite());
+            // The step is bounded by the routine's own accuracy at that
+            // argument, which is set by the largest term in the exponent
+            // rather than by the answer — the mechanism the accuracy
+            // section states. At a = 5000 that allows 3.8e-11 and the
+            // measured step is 7.1e-12.
+            let allowed = 1e-14 + 4.0 * f64::EPSILON * seam.max(a * seam.ln());
+            let step = (series_side - fraction_side).abs() / fraction_side;
+            assert!(
+                step < allowed,
+                "a = {a}: the branches step by {step:e} against an allowance of {allowed:e}"
+            );
+        }
+    }
+
+    /// The iteration ceiling was fixed at 200 and reaching it returned
+    /// the truncated sum. It first binds at a = 576.5, and at a = 25000
+    /// — a chi-squared with 50000 degrees of freedom at a reduced
+    /// statistic of one — the truncated answer was 21% wrong. The
+    /// ceiling now follows `a`, and exhausting it is an error.
+    #[test]
+    fn the_iteration_ceiling_follows_the_shape_parameter() {
+        // Q(a, a) approaches 1/2 from below as a grows; a truncated sum
+        // at these arguments overshoots it by whole percent.
+        for &a in &[2500.0_f64, 5000.0, 25000.0, 50000.0] {
+            let got = upper_inc_gamma_reg(a, a);
+            assert!(got.is_finite(), "Q({a}, {a}) = {got}");
+            assert!(
+                (0.49..0.5).contains(&got),
+                "Q({a}, {a}) = {got}, which is not just under one half"
+            );
+        }
+        // The rule stays ahead of what each half needs, by the factor
+        // of two its own documentation claims.
+        for (a, series, fraction) in [
+            (100.0_f64, 89_usize, 39_usize),
+            (5000.0, 484, 152),
+            (50000.0, 1101, 328),
+            (1e6, 1724, 894),
+        ] {
+            let ceiling = gamma_max_iter(a);
+            assert!(
+                ceiling > 2 * series.max(fraction),
+                "at a = {a} the ceiling {ceiling} is under twice the {} needed",
+                series.max(fraction)
+            );
+        }
+    }
+
+    /// The top of the domain, where the contract is a formula rather
+    /// than a number.
+    ///
+    /// Two different things happen up there and both are pinned. The
+    /// result stays a probability and stops being the right one, and
+    /// the published bound eps * max(x, a ln x) still covers how wrong
+    /// it is — which is what makes that bound usable rather than
+    /// decorative. Then the arithmetic leaves the unit interval and the
+    /// exit check refuses.
+    ///
+    /// No reference table is needed to show the error, because
+    /// `Q(a, a)` is below one half for every finite `a`: the median of
+    /// a gamma distribution is under its mean, and `Q(a, a)` rises to
+    /// one half only in the limit. A value above one half is therefore
+    /// proof of arithmetic failure on its own terms.
+    #[test]
+    fn the_upper_edge_is_bounded_by_its_stated_mechanism_then_refused() {
+        // Still correct in kind: a probability, and under one half.
+        for &a in &[1e3_f64, 1e5, 1e6, 1e8] {
+            let got = upper_inc_gamma_reg(a, a);
+            assert!(
+                (0.0..0.5).contains(&got),
+                "Q({a:e}, {a:e}) = {got}, which is not a probability under one half"
+            );
+        }
+
+        // Demonstrably wrong, with no reference: above one half. The
+        // published bound covers the excess at each.
+        for &a in &[1e10_f64, 1e12, 1e14] {
+            let got = upper_inc_gamma_reg(a, a);
+            assert!(
+                (0.0..=1.0).contains(&got),
+                "Q({a:e}, {a:e}) = {got} left the unit interval without being refused"
+            );
+            assert!(
+                got > 0.5,
+                "Q({a:e}, {a:e}) = {got} is no longer demonstrably wrong; re-measure the \
+                 accuracy table if the routine improved"
+            );
+            let bound = f64::EPSILON * a.max(a * a.ln());
+            let excess = (got - 0.5) / 0.5;
+            assert!(
+                excess <= bound,
+                "Q({a:e}, {a:e}) = {got} exceeds one half by {excess:e}, over the \
+                 published bound {bound:e}"
+            );
+        }
+
+        // Six figures gone by 1e10 and all of them by 1e14.
+        assert!((upper_inc_gamma_reg(1e10, 1e10) - 0.5) / 0.5 > 1e-6);
+        assert!((upper_inc_gamma_reg(1e14, 1e14) - 0.5) / 0.5 > 0.1);
+
+        // Past where it stops being a probability it is a NaN, rather
+        // than the -18.23 the series produced.
+        let broken = upper_inc_gamma_reg(1e15, 1e15);
+        assert!(
+            broken.is_nan(),
+            "Q(1e15, 1e15) = {broken} should be refused"
+        );
+
+        // And the exit check cannot fire on anything the engine reaches.
+        for &k in &[1_usize, 2, 6, 15] {
+            for &x in &[0.5_f64, 1.0, 12.59, 100.0, 1000.0] {
+                assert!(chi2_sf(x, k).is_finite(), "chi2_sf({x}, {k})");
+            }
+        }
+    }
+
+    /// A sweep of the documented domain, out past where a fixed ceiling
+    /// used to bind. Every answer has to be a number in [0, 1]: a NaN
+    /// here means a half gave up, which is now an error rather than a
+    /// truncation, and either way must not happen on this range.
+    #[test]
+    fn no_argument_on_the_documented_domain_exhausts_a_ceiling() {
+        let mut checked = 0_usize;
+        let mut a = UPPER_INC_GAMMA_MIN_A;
+        while a <= 60_000.0 {
+            let mut x = 1e-4_f64;
+            while x < 8.0 * a + 800.0 {
+                let q = upper_inc_gamma_reg(a, x);
+                assert!(
+                    q.is_finite() && (0.0..=1.0).contains(&q),
+                    "Q({a}, {x}) = {q}"
+                );
+                checked += 1;
+                x *= 1.35;
+            }
+            for &x in &[
+                a + 1.0 - f64::EPSILON * a,
+                a + 1.0,
+                a + 1.0 + f64::EPSILON * a,
+            ] {
+                assert!(upper_inc_gamma_reg(a, x).is_finite(), "seam at a = {a}");
+            }
+            a = if a < 100.0 { a + 0.5 } else { a * 1.6 };
+        }
+        assert!(
+            checked > 5_000,
+            "the sweep covered only {checked} arguments"
+        );
     }
 
     #[test]

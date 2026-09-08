@@ -41,12 +41,13 @@ pub mod multivariate;
 pub mod split_library;
 
 pub use distributions::{
-    chi2_sf, ln_gamma, normal_cdf, normal_cdf_difference, normal_pdf, normal_sf,
-    upper_inc_gamma_reg,
+    UPPER_INC_GAMMA_MIN_A, chi2_sf, ln_gamma, normal_cdf, normal_cdf_difference, normal_pdf,
+    normal_sf, upper_inc_gamma_reg,
 };
 pub use multivariate::{
-    GaussianSplitError, ScaledSigmaPoints, SigmaPointScaling, SigmaPointsError, sample_statistics,
-    sigma_points, sigma_points_scaled, split_gaussian, weighted_sample_statistics,
+    COVARIANCE_SYMMETRY_TOLERANCE, GaussianSplitError, ScaledSigmaPoints, SigmaPointScaling,
+    SigmaPointsError, sample_statistics, sigma_points, sigma_points_scaled, split_gaussian,
+    weighted_sample_statistics,
 };
 pub use split_library::{
     MAX_SPLIT_COMPONENTS, MIN_SPLIT_COMPONENTS, UnivariateSplit, univariate_split,

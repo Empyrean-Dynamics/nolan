@@ -1,5 +1,7 @@
-//! The standard normal CDF, survival function, density and bracket
-//! probabilities against correctly rounded references.
+//! The scalar distribution surface against correctly rounded
+//! references: the standard normal CDF, its survival function, its
+//! density and bracket probabilities, and the chi-squared survival,
+//! regularized upper incomplete gamma and log-gamma beneath them.
 //!
 //! # Where the references come from
 //!
@@ -34,7 +36,10 @@
 //! mpmath: Johansson, F. et al. (2023). mpmath, version 1.3.0.
 //! <https://mpmath.org>
 
-use hyperjet::statistics::{normal_cdf, normal_cdf_difference, normal_pdf, normal_sf};
+use hyperjet::statistics::{
+    chi2_sf, ln_gamma, normal_cdf, normal_cdf_difference, normal_pdf, normal_sf,
+    upper_inc_gamma_reg,
+};
 
 include!("data/normal_reference_table.rs");
 
@@ -376,4 +381,182 @@ fn a_bracket_with_an_endpoint_at_the_origin_keeps_its_figures() {
         // Half the mass sits on each side of the origin.
         assert_eq!(normal_cdf_difference(f64::INFINITY, zero), 0.5);
     }
+}
+
+/// What the incomplete gamma may be off by at a given `(a, x)`.
+///
+/// Its error is set by the largest intermediate in the exponent
+/// `-x + a ln x - lnΓ(a)` rather than by the answer, so it grows with
+/// the arguments and not with the result. Below `a = 100` the flat bound
+/// dominates and this is that bound; above it the mechanism does, which
+/// is why a single constant cannot describe the whole domain and why
+/// the documentation states both.
+fn allowance(flat: f64, a: f64, x: f64) -> f64 {
+    let mechanism = 4.0 * f64::EPSILON * x.max(a * x.ln().abs());
+    flat.max(mechanism)
+}
+
+/// The chi-squared survival function.
+///
+/// The values this replaces were transcribed rather than computed, and
+/// three of the six were wrong — one in its fifth significant figure —
+/// under a tolerance of 1e-4 that could not have noticed. That tolerance
+/// would have passed a routine degraded from 1e-15 to 1e-5, which is to
+/// say destroyed, on a function with sixteen call sites in the engine.
+#[test]
+fn the_chi_squared_survival_matches_correctly_rounded_references() {
+    const BOUND: f64 = 5e-13;
+    let mut worst = (0.0_f64, 0.0_f64, 0_usize);
+    let mut documented = (0.0_f64, 0.0_f64, 0_usize);
+    for &(x, k, reference) in &CHI2_SF_REFERENCES {
+        let got = chi2_sf(x, k);
+        if reference == 0.0 {
+            // Deep enough in the tail that the true value is under the
+            // smallest double. There is no relative error to take.
+            assert_eq!(
+                got, 0.0,
+                "chi2_sf({x}, {k}) = {got:e} where the true value is 0"
+            );
+            continue;
+        }
+        let error = (got - reference).abs() / reference;
+        assert!(
+            error < allowance(BOUND, k as f64 / 2.0, x / 2.0),
+            "chi2_sf({x}, {k}) = {got:e}, reference {reference:e}, off by {error:e}"
+        );
+        if error > worst.0 {
+            worst = (error, x, k);
+        }
+        if k <= 15 && x <= 2000.0 && error > documented.0 {
+            documented = (error, x, k);
+        }
+    }
+    println!(
+        "chi2_sf: worst relative error {:e} at (x = {}, k = {}); \
+         worst inside the documented k <= 15, x <= 2000 is {:e} at (x = {}, k = {})",
+        worst.0, worst.1, worst.2, documented.0, documented.1, documented.2
+    );
+    // The documented range carries its own bound and its own witness,
+    // rather than borrowing the mechanism allowance that the large-k
+    // rows need.
+    assert!(
+        documented.0 < BOUND,
+        "inside k <= 15 and x <= 2000 the worst is {:e}, over the documented {BOUND:e}",
+        documented.0
+    );
+    // The bound has to be able to fail, or it is decoration. The worst
+    // measured here is 1.6e-14, at the largest x and k on the grid, so
+    // the bound has about a factor of six in hand — room for another
+    // platform's `exp` and `ln`, and six orders tighter than the 1e-4 it
+    // replaces, which would have passed a routine degraded to 1e-5.
+    assert!(
+        worst.0 > 0.0,
+        "every reference matched to the bit; suspect the harness"
+    );
+}
+
+/// The regularized upper incomplete gamma, on both sides of its internal
+/// seam at `x = a + 1`.
+#[test]
+fn the_upper_incomplete_gamma_matches_correctly_rounded_references() {
+    const BOUND: f64 = 1e-12;
+    let mut worst = (0.0_f64, 0.0_f64, 0.0_f64);
+    for &(a, x, reference) in &UPPER_INC_GAMMA_REFERENCES {
+        let got = upper_inc_gamma_reg(a, x);
+        if reference == 0.0 {
+            assert_eq!(got, 0.0, "Q({a}, {x}) = {got:e} where the true value is 0");
+            continue;
+        }
+        let error = (got - reference).abs() / reference;
+        assert!(
+            error < allowance(BOUND, a, x),
+            "Q({a}, {x}) = {got:e}, reference {reference:e}, off by {error:e}"
+        );
+        if error > worst.0 {
+            worst = (error, a, x);
+        }
+    }
+    println!(
+        "upper_inc_gamma_reg: worst relative error {:e} at (a = {}, x = {})",
+        worst.0, worst.1, worst.2
+    );
+}
+
+/// Log-gamma, including the small arguments that used to return
+/// infinity and the two zeros where a relative claim cannot hold.
+#[test]
+fn the_log_gamma_matches_correctly_rounded_references() {
+    // The zeros of ln Gamma, at x = 1 and x = 2. Beside them the
+    // function passes through nothing while the absolute error stays
+    // near 1e-15, so a relative bound is the wrong instrument there and
+    // an absolute one is the right one. Both are asserted, each where it
+    // means something, and the exception is pinned below rather than
+    // waved at.
+    const NEAR_A_ZERO: f64 = 1e-2;
+    const RELATIVE: f64 = 1e-14;
+    const ABSOLUTE: f64 = 1e-14;
+
+    let mut worst_relative = (0.0_f64, 0.0_f64);
+    for &(x, reference) in &LN_GAMMA_REFERENCES {
+        let got = ln_gamma(x);
+        assert!(got.is_finite(), "ln Γ({x}) = {got}");
+        if reference.abs() > NEAR_A_ZERO {
+            // Away from the zeros the relative claim is the real one.
+            // An absolute bound would be meaningless here: ln Γ runs to
+            // 2.2e11 at the top of this grid, where 1e-14 of it is
+            // 2.2e-3.
+            let error = (got - reference).abs() / reference.abs();
+            assert!(
+                error < RELATIVE,
+                "ln Γ({x}) = {got:e}, reference {reference:e}, off by {error:e}"
+            );
+            if error > worst_relative.0 {
+                worst_relative = (error, x);
+            }
+        } else {
+            // Beside a zero the function passes through nothing and only
+            // the absolute error means anything.
+            assert!(
+                (got - reference).abs() < ABSOLUTE,
+                "ln Γ({x}) = {got:e}, reference {reference:e}"
+            );
+        }
+    }
+    println!(
+        "ln_gamma: worst relative error {:e} at x = {} (away from the zeros)",
+        worst_relative.0, worst_relative.1
+    );
+
+    // The exception itself, pinned. These two arguments are where the
+    // relative error is largest: 1.7e-12 and 1.0e-12, a hundred times
+    // the relative bound above, while the absolute error at both is
+    // about 1e-15 — which is the whole point, since a caller that
+    // exponentiates this, as `upper_inc_gamma_reg` does, feels the
+    // absolute error and not the relative one.
+    for &x in &[1.000_678_084_215_155_3_f64, 1.997_680_536_308_456] {
+        let reference = LN_GAMMA_REFERENCES
+            .iter()
+            .find(|row| row.0 == x)
+            .expect("the grid carries the neighbourhoods of both zeros")
+            .1;
+        let got = ln_gamma(x);
+        let relative = (got - reference).abs() / reference.abs();
+        assert!(
+            relative > 10.0 * RELATIVE,
+            "ln Γ({x}) is now relatively accurate to {relative:e}; if that is real, \
+             the documented exception beside the zeros should be re-measured"
+        );
+        assert!(
+            (got - reference).abs() < ABSOLUTE,
+            "ln Γ({x}) = {got:e} is off by more than an absolute {ABSOLUTE:e}"
+        );
+        println!(
+            "beside a zero, x = {x}: relative {relative:e}, absolute {:e}",
+            (got - reference).abs()
+        );
+    }
+    // At the zeros themselves the value is an absolute rounding, not a
+    // relative anything.
+    assert!(ln_gamma(1.0).abs() < 1e-15);
+    assert!(ln_gamma(2.0).abs() < 1e-15);
 }

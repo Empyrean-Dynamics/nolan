@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit correctly rounded standard-normal references as a Rust table.
+"""Emit correctly rounded distribution references as Rust tables.
 
 The crate's `normal_cdf`, `normal_sf` and `normal_pdf` claim a RELATIVE
 accuracy across the whole range where the result is representable as a
@@ -20,6 +20,13 @@ A second table carries correctly rounded Phi(hi) - Phi(lo) over brackets
 chosen to exercise the three regimes the difference has to survive: both
 arguments on one side of the origin and far apart, both on one side and
 close enough to cancel, and straddling the origin.
+
+Three further tables cover the rest of the module's scalar surface, on
+the same terms: chi-squared survival, the regularized upper incomplete
+gamma it is built from, and the log-gamma that both rest on. They exist
+because the values those tests carried before were transcribed rather
+than computed, and three of them were wrong — one in its fifth
+significant figure, under a tolerance loose enough to hide it.
 
 The survival function needs no column of its own: Q(x) = Phi(-x) exactly,
 and the grid is symmetric, so the test reads Q(x) off the row at -x.
@@ -42,7 +49,7 @@ https://mpmath.org
 import sys
 from pathlib import Path
 
-from mpmath import mp, erfc, exp, sqrt, pi, mpf
+from mpmath import mp, erfc, exp, gammainc, loggamma, sqrt, pi, mpf
 
 # 60 decimal digits: the smallest value in the table is near 1e-316, and
 # 60 digits leaves ~40 digits of headroom over the 17 that round-tripping
@@ -166,6 +173,55 @@ DIFFERENCE_BRACKETS = [
 ]
 
 
+# Chi-squared survival, at the critical values a test suite reaches for
+# and a spread across the degrees of freedom the engine uses.
+CHI2_CASES = [
+    (1.0, 1), (3.84, 1), (0.004, 1), (10.83, 1),
+    (1.0, 2), (5.99, 2), (13.82, 2),
+    (1.0, 3), (7.81, 3),
+    (1.0, 6), (12.59, 6), (22.46, 6),
+    (1.0, 13), (22.36, 13),
+    (30.0, 15), (100.0, 15), (0.5, 15),
+    (50.0, 1), (200.0, 6), (500.0, 15),
+    # Past x = 1000, where the accuracy is worst and where a grid that
+    # stopped at 500 reported a bound the function does not hold. The
+    # k = 12 rows bracket the measured worst argument, near x = 1167.
+    (1000.0, 1), (1000.0, 6), (1000.0, 15),
+    (1100.0, 12), (1167.11, 12), (1200.0, 12),
+    (1500.0, 6), (2000.0, 15), (2000.0, 1),
+    # A reduced statistic of one at large k: the query that exhausted a
+    # fixed 200-term ceiling and returned a truncated sum.
+    (5000.0, 5000), (10000.0, 10000), (50000.0, 50000), (100000.0, 100000),
+]
+
+# The regularized upper incomplete gamma, on both sides of its internal
+# seam at x = a + 1 and at the corners of the domain chi2_sf reaches.
+UPPER_INC_GAMMA_CASES = [
+    # The domain edge itself, on both branches: a = 0.5 is the smallest
+    # argument the routine answers for and the smallest chi2_sf supplies.
+    (0.5, 0.001), (0.5, 0.4), (0.5, 1.4999), (0.5, 1.50001),
+    # Large a, where the iteration ceiling has to follow a.
+    (5000.0, 4000.0), (5000.0, 5000.0), (5000.0, 5001.0), (5000.0, 8000.0),
+    (50000.0, 50000.0), (50000.0, 50001.0),
+    (0.5, 0.1), (0.5, 1.0), (0.5, 1.5), (0.5, 2.0), (0.5, 20.0),
+    (1.0, 0.5), (1.0, 2.0), (1.0, 2.5), (1.0, 30.0),
+    (3.0, 1.0), (3.0, 4.0), (3.0, 4.5), (3.0, 50.0),
+    (7.5, 1.0), (7.5, 8.5), (7.5, 9.0), (7.5, 100.0),
+    (15.0, 16.0), (15.0, 250.0),
+    (100.0, 100.98), (100.0, 198.08), (100.0, 400.0),
+]
+
+# Log-gamma, including the small arguments where the shipped form used
+# to return infinity and the two zeros where a relative claim cannot
+# hold.
+LN_GAMMA_CASES = [
+    1e-300, 1e-100, 5.551115123125783e-17, 1e-16, 1e-8, 1e-4,
+    0.01, 0.1, 0.25, 0.5, 0.75,
+    1.0, 1.0006780842151553, 1.5, 1.997680536308456, 2.0,
+    2.5, 5.0, 10.0, 50.0, 100.0, 1000.0, 1e10,
+]
+
+
 def grid():
     """The symmetric grid, ascending, with no duplicates.
 
@@ -260,6 +316,45 @@ def main():
 pub const NORMAL_DIFFERENCE_REFERENCES: [(f64, f64, f64); {len(difference_rows)}] = [
 """
 
+    with mp.workdps(120):
+        chi2_rows = [
+            "    ({}, {}, {}),".format(
+                rust_f64(x), k, rust_f64(gammainc(mpf(k) / 2, mpf(x) / 2, mp.inf, regularized=True))
+            )
+            for x, k in CHI2_CASES
+        ]
+        gamma_rows = [
+            "    ({}, {}, {}),".format(
+                rust_f64(a), rust_f64(x),
+                rust_f64(gammainc(mpf(a), mpf(x), mp.inf, regularized=True)),
+            )
+            for a, x in UPPER_INC_GAMMA_CASES
+        ]
+        ln_gamma_rows = [
+            "    ({}, {}),".format(rust_f64(x), rust_f64(loggamma(mpf(x))))
+            for x in LN_GAMMA_CASES
+        ]
+
+    extra = f"""
+
+/// `(x, k, chi2_sf(x, k))`. The survival function of a chi-squared with
+/// `k` degrees of freedom, which is `Q(k/2, x/2)`.
+pub const CHI2_SF_REFERENCES: [(f64, usize, f64); {len(chi2_rows)}] = [
+{chr(10).join(chi2_rows)}
+];
+
+/// `(a, x, Q(a, x))`, the regularized upper incomplete gamma. The pairs
+/// straddle the internal seam at `x = a + 1`.
+pub const UPPER_INC_GAMMA_REFERENCES: [(f64, f64, f64); {len(gamma_rows)}] = [
+{chr(10).join(gamma_rows)}
+];
+
+/// `(x, ln Gamma(x))`.
+pub const LN_GAMMA_REFERENCES: [(f64, f64); {len(ln_gamma_rows)}] = [
+{chr(10).join(ln_gamma_rows)}
+];
+"""
+
     header = f"""// Generated by tools/normal_reference_table.py — do not edit by hand.
 //
 // Correctly rounded standard-normal references: for each argument `x`,
@@ -291,8 +386,12 @@ pub const NORMAL_REFERENCES: [(f64, f64, f64); {len(rows)}] = [
         + difference_header
         + "\n".join(difference_rows)
         + "\n];\n"
+        + extra
     )
-    print(f"{len(rows)} points and {len(difference_rows)} brackets written to {out}")
+    print(
+        f"{len(rows)} points, {len(difference_rows)} brackets, {len(chi2_rows)} chi2, "
+        f"{len(gamma_rows)} gamma, {len(ln_gamma_rows)} log-gamma written to {out}"
+    )
 
 
 if __name__ == "__main__":
