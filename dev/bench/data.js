@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788823865801,
+  "lastUpdate": 1788873671321,
   "repoUrl": "https://github.com/Empyrean-Dynamics/nolan",
   "entries": {
     "Nolan Benchmarks": [
@@ -17639,6 +17639,714 @@ window.BENCHMARK_DATA = {
             "name": "wrap_360_x64",
             "value": 151,
             "range": "± 4",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "moeyensj@users.noreply.github.com",
+            "name": "Joachim Moeyens",
+            "username": "moeyensj"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5546b176b51ced599aa8b8dfb37ea90586d782e2",
+          "message": "Compute the normal tails to a relative accuracy instead of an absolute one (#38)\n\n* Compute the normal tails to a relative accuracy instead of an absolute one\n\n`normal_cdf` was the Abramowitz & Stegun 26.2.17 rational approximation,\nwhose error is 7.5e-8 ABSOLUTE, with a hard clamp to exactly 0.0 below\n-8 and exactly 1.0 above +8. An absolute error bound says nothing about\na tail: measured against correctly rounded references, that form is off\nby a relative 4.7e-4 at 4σ, 3.6e-3 at 6σ and 7.1e-2 at 8σ, and past 8σ\nit returns exactly zero for a quantity a double still holds with fifteen\nsignificant figures. The clamp is also a jump discontinuity — it drops\n1.07 times the whole 6.2e-16 tail across an interval of 2e-9 — which\ndestroys the convergence of any quadrature built over it.\n\nIt is replaced by the all-positive error-function series of A&S 26.2.11\nbelow 1.75σ and the Laplace continued fraction of 26.2.14 beyond it, at\na truncation depth that follows the argument. Only the small side is\never formed, so nothing anywhere subtracts two numbers near one.\n\nThe Gaussian factor both branches share now splits its exponent as\nt²/2 = h²/2 + (t-h)(t+h)/2 with h = ⌊64t⌋/64, after Cody (1969), so that\nh²/2 is exact and the remainder never exceeds 0.61. Without that split,\nrounding t²/2 misplaces the exponent by ε t²/2 and the exponential turns\nit into the same relative error in the result: 1.4e-14 at 30σ and\n1.8e-14 at 37σ, which no choice of series or fraction above it recovers.\n`normal_pdf` takes the split for |x| > 2 and is bit-identical to 1.14.0\nbelow that, where the direct form is already good to a unit in the last\nplace.\n\nMeasured relative error, against arbitrary-precision references:\n\n  before   4.7e-4 at 4σ, 3.6e-3 at 6σ, 7.1e-2 at 8σ, exactly 0 past 8σ\n  after    6.3e-15 worst, at ±1.7466; under 1e-15 beyond the handover,\n           the largest seen being 6.1e-16\n\nThe worst argument is inside the series, just under the handover, where\nthe magnification of forming 1/2 - u reaches 11.4. The stated 1e-14\ntherefore carries a factor of 1.6 and no more. `SERIES_SWITCH` is the\nonly dial that moves it and the trade is documented at the constant.\n\nThe density holds a relative 1e-15, worst measured 4.9e-16, against an\nerror budget of two exponentials, a multiply, a divide and the split\nremainder that comes to 7.6e-16. Sixty-fourths rather than sixteenths:\nh*h stays exact — a test walks all 2496 reachable heads and checks it —\nand the worst case falls from 7.2e-16 to 4.9e-16 at identical cost.\n\nThere is no cutoff in either direction: Φ(-20) = 2.7536e-89 and\nΦ(-37) = 5.7256e-300 are returned, and the tail runs to the smallest\npositive subnormal, 4.94e-324, at 38.4853 against a true edge of\n38.4854. φ(30) improves from a relative 1.4e-14 to 1.5e-16 and φ(37)\nfrom 1.8e-14 to 4.3e-18.\n\nΦ(0) is exactly 1/2 and Φ(-x) is exactly `normal_sf(x)`. Monotonicity\nhas two answers and both are stated: over consecutive doubles the\ncontinued-fraction branch is monotone bit for bit, and the series branch\nis not, stepping backward 5611 times in 20000 consecutive doubles from\n-1.75, by at most 5.5e-15 relative. That is the noise floor of 1/2 - u\nexceeding the true increment, and anything bisecting on this function\nmust tolerate it.\n\n`normal_sf` is new and is how an upper tail should be asked for.\n`1.0 - normal_cdf(x)` is exact arithmetic on an inexact premise: Φ(x)\nis a double near one whose spacing is 2.2e-16, so the complement has no\nsignificant figures beyond 8σ and none at all beyond 8.3σ, where Φ\nrounds to exactly one. `normal_sf(9.0)` is 1.1286e-19; `1.0 -\nnormal_cdf(9.0)` is zero.\n\n`normal_cdf_difference` is new and gives the probability of a bracket.\nThe naive difference of CDF values loses figures on every same-side\nbracket however wide and all of them past 8σ: Φ(37) - Φ(30) is zero,\nagainst a true 4.9067e-198. Brackets strictly on one side difference the\ntwo small tails; every other bracket, including any with an endpoint AT\nthe origin, adds the two masses between the origin and each end, both\npositive, so nothing is subtracted. That second arm matters more than it\nlooks: the tail at zero is exactly one half, so a same-side arm would\nlose a narrow bracket from the origin entirely — 3.1e-8 relative at a\nwidth of 1e-9, against 1.4e-17 from the arm that is taken.\n\nWhat it does not fix is stated at the function and measured in the\nsuite. A narrow same-side bracket cancels, and by how much follows its\nwidth rather than its depth: 4.3e-14 at (6.001, 6), 2.1e-13 at\n(1.001, 1), 9.6e-8 at (1 + 1e-9, 1). The series band is no better than\nthe tail, which is the sign that the loss is the geometry. Past a\nmagnification of about a hundred neither this nor the naive difference\nis reliably closer — at (1.5 + 1e-9, 1.5) the naive form lands at\n9.7e-8 and this one at 3.3e-7 — so the guarantee is that nothing is lost\nwhich the bracket had not already lost, not an ordering.\n\nReferences come from `tools/normal_reference_table.py`, which evaluates\nΦ and φ at 60 decimal digits with mpmath, brackets at 400, and rounds\neach once to the nearest double, emitting 531 points and 18 brackets to\n`tests/data/normal_reference_table.rs`. The extra digits for brackets\nare not decoration: at 60, Φ(37) is exactly 1 and the reference for\nΦ(37) - Φ(30) cancels to zero.\n\nArbitrary precision is the only admissible reference here, and the\nin-crate checks say which of them establish accuracy and which do not.\nTwo double-precision routines that share a density share an error floor\nand their errors partly cancel, so the branch-agreement sweep and the\ntruncation-depth sweep establish agreement and convergence, not\naccuracy. Accuracy rests on the mpmath table alone, which now carries\nthe function's worst argument and pins it by name.\n\nCost, per call, on 64-argument sweeps, against the replaced form's 5.9 ns:\n\n  |x| < 1.75      21.0 ns   the series\n  1.75 to 8σ      95.5 ns   the fraction at its deepest\n  8 to 37σ        25.0 ns   the fraction where it converges fast\n  φ, |x| ≤ 2       4.1 ns   unchanged\n  φ, |x| > 2       6.0 ns   the split exponent\n  bracket, straddling   51 ns   two central masses\n  bracket, same side   175 ns   two tails at the fraction's depth\n\nThe 1.75σ to 8σ band is the expensive one, at sixteen times the price of\nan answer that was wrong there in its third digit.\n\nThe private tail in `tools/split_library_fit.rs` is deleted; the fitter\nand its suite call `normal_sf`. Its accuracy pin is superseded by\n`tests/normal_accuracy.rs`, which covers the same arguments at 1e-14\nrelative rather than 1e-13.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01VGMgAEvfuaGGbNEBwenbNo\n\n* Refuse what the statistics surface used to accept in silence\n\nAn audit of the module around the normal CDF found the same defect class\nin four more places: a value computed from a bad input without complaint,\nor a claim resting on a reference that could not witness it.\n\n`ln_gamma` returned infinity below x = 5.551115123125784e-17. The Lanczos\nform needs x - 1, which rounds to exactly -1 below 2^-54, putting a zero\nin the first denominator of the sum. The true ln Γ(1e-300) is an ordinary\n690.78. It is now reached through Γ(x) = Γ(x+1)/x below x = 1/2, which\nalso removes the accuracy loss well above the cliff: ln Γ(1e-8) was wrong\nby a relative 2.7e-10 and is now exact to a unit in the last place. The\nthreshold is 1/2 and not lower on purpose, because every argument this\ncrate supplies is k/2 >= 0.5, so no value it computes for itself moves.\nInfinity and negative arguments are now named rather than arrived at:\n+inf and NaN respectively.\n\nThe documented \"~1e-15 relative for x > 0.5\" was not true beside the two\nzeros of ln Γ, at x = 1 and x = 2, where nothing of that form can be:\nthe absolute error stays near 1e-15 while the function passes through\nnothing. Measured 1.7e-12 relative at x = 1.00068 and 1.0e-12 at\nx = 1.99768, against absolute errors of 6.7e-16 and 1.0e-15. Both the\nclaim and the exception are now stated and both are pinned.\n\n`upper_inc_gamma_reg` was silently 11% wrong at a = 1e-16 — inside its\ndocumented domain, returning a plausible number. Half of that was\nln_gamma, and fixing ln_gamma fixes the continued-fraction arm:\n2.1938393439551823e-17 against a true 2.193839343955203e-17, a relative\n9.4e-15. The other arm is not fixed by it. Below the seam the routine\nforms Q = 1 - P, and for small a the true Q is itself of order a, so the\nsubtraction returns nothing: 6.1e-11 relative at a = 1e-4 and a factor\nof 282 at a = 1e-16.\n\nGetting that arm right needs Q formed directly, as\n-expm1(u) - exp(u)*a*T with u = a ln x - lnΓ(1+a), whose terms are both\nO(a) and neither subtracts from one. It needs lnΓ(1+a) to RELATIVE\naccuracy at small a, which is a different routine from ln_gamma — that\none passes through a zero at 1 and is accurate there only in absolute\nterms. Rather than carry an approximation nothing calls, the domain\nnarrows to a >= 0.5 and everything below it returns NaN by name. That\nthreshold is exactly the smallest a chi2_sf can supply, at k = 1, so the\nwhole chi-squared surface stays inside it, and it is exported so a\ncaller can test its own argument first.\n\nA NaN refusal rather than a Result is a deliberate choice and is\ndefensible only while the refused regimes stay unreachable: this\nmodule's scalar surface is uniformly f64 in and f64 out, NaN is already\nhow every function in it reports an argument it will not answer for, and\nit is what the C library does for the same reason. The cost is that a\nNaN propagates silently until something checks it, which is why the\nthreshold is a public constant. If a caller ever does need a < 1/2, that\nargument is void and the signature should change rather than the\nthreshold move.\n\nThe domain was incomplete at the other end too. From about a = 1e10 the\nroutine is silently wrong — 0.590 at a = 1e14 where the truth is 0.5 —\nand at a = 1e15 the series returns -18.23, which is not a probability at\nall. It now checks its own result and returns NaN for anything outside\nthe unit interval, which also carries through the NaN either half\nreturns on exhaustion. That check is a backstop and not a guarantee: a\nvalue that is merely wrong stays inside the interval and is returned,\nand the documentation says so rather than letting the guard imply\notherwise.\n\nIts accuracy is now stated with the range it holds over: under 1e-12 for\na <= 100, worst measured 1.8e-13 at a = 100. Above that there is no flat\nbound to give and the mechanism IS the contract, since a caller can\nevaluate it: the error is at most eps * max(x, a ln x), which measures\n2.6e-7 against a bound of 4.1e-7 at a = 1e8, and 1.8e-1 against 7.2e-1\nat a = 1e14. The error is set by the largest intermediate in the\nexponent -x + a ln x - lnΓ(a), not by the exponent itself, so the result\ncarries fewer than six significant figures above roughly a = 1e8 and\nnone by 1e14. The step across the\ninternal seam at x = a + 1 grows for the same reason and at the same\nrate, 2.3e-13 at a = 100 and 7.1e-12 at a = 5000, and the test that\nchecks the seam now bounds it by that mechanism instead of by a constant\nthat only held where it was measured.\n\nBoth incomplete-gamma halves stopped at a fixed 200 iterations and\nreturned the truncated value with no word. That ceiling is reachable:\nthe series needs about 9*sqrt(a) terms at x = a, which is a chi-squared\nat a reduced statistic of one, so 200 first binds at a = 576.5 and by\na = 25000 the truncated answer was 21% wrong. The claim that it could\nnot be reached was false, and the sweep that \"proved\" it ran only to\na = 100. The ceiling now follows a as 200 + 12*sqrt(a), whose margin is never\nwithin 40 percent of binding — 1.65 at a = 1e6, its tightest point, and\n1.74 at 1e9 — and which the mechanism agrees with, the series needing\nabout 8.31*sqrt(a) terms so the ratio tends to 1.44 rather than closing.\nExhausting it returns NaN rather than a truncated sum, because a rule\nfitted to a sweep is not a proof. The sweep now runs to a = 60000.\n\n`chi2_sf(f64::INFINITY, k)` returned NaN where 0 is the limit; the\nprefactor forms -inf + inf. It returns 0, as `normal_sf` does at its own\ninfinity.\n\n`chi2_sf`'s documented bound did not hold either: 1e-13 claimed, 1.1e-13\nreached at k = 12 near x = 1167, and the quoted worst of 2.7e-14 was the\nx <= 300 row of a table transcribed as though it were the whole range.\nThe bound is 5e-13 over k <= 15 and x <= 2000, the generated grid now\nreaches x = 2000 and k = 100000 so the test can see the bad region, and\nthe large-k rows are held to the mechanism rather than to a flat\nconstant.\n\n`chi2_sf`'s reference test asserted three wrong constants under a\ntolerance of 1e-4 written around them, with a comment blaming the\nseries/continued-fraction transition for a shortfall that was the\nreference's. The routine is right to about one unit in the last place at\nall six cases. The entry labelled \"erfc(sqrt 1.92)\" was 0.05004410659551184\nagainst a true 0.050043521248705106, wrong in its fifth significant\nfigure. At 1e-4 relative, a regression that destroyed the routine — from\n1e-15 to 1e-5 — would have passed, on a function with sixteen engine call\nsites. The constants are replaced by twenty generated references and the\ntolerance is 1e-13, against a measured worst of 1.6e-14.\n\n`sigma_points` and `sigma_points_scaled` accepted an asymmetric\ncovariance and built from its lower triangle, because that is all the\nCholesky reads. A transposition, a half-filled matrix or an interface\nthat populated one triangle produced a confident answer with the other\nhalf discarded. They now refuse with `SigmaPointsError::NotSymmetric`,\nnaming the worst offending pair, at a tolerance of 1e-12 relative to the\nlargest entry — loose enough for a propagated covariance, which is a\ntriple product and symmetric only to the last unit in the last place,\nand orders tighter than any real asymmetry.\n\n`sample_statistics` returned `Some` with a NaN mean and a NaN covariance\nwhen handed a non-finite ensemble. A NaN there means the thing that\nproduced it diverged, and a result shaped like an answer is the wrong\nway to say so. It returns `None`, which is the channel its signature\nhas. Its single-sample fallback — a zero covariance for an undefined\nquantity — is left as it was and documented as the declared fallback it\nis, with the note that zero reads downstream as \"known exactly\".\n\nThe shipped Merwe default costs six digits on the reconstructed mean and\nnothing said so. At N = 6 it gives N + lambda = 6e-6, so the weights are\n-9.999990e5 and 8.333333e4 and sum to 1.00000000029103830; forming the\nmean as their weighted sum reaches an O(1) answer through terms of size\n1e6, and 2.8e-10 of it is gone. This is textbook scaled-unscented\nbehaviour rather than a defect in the formulation, and the mean is NOT\nreformed here. It is written down, at the constructor and at the weights,\nbecause a caller choosing between alpha = 1e-3 and alpha = 1e-2 is\ntrading two orders of linearization fidelity against two orders of\narithmetic and cannot see that from the name.\n\nReferences for all of it come from the same generator, extended to emit\nchi-squared, incomplete-gamma and log-gamma tables beside the normal\nones, at 60 decimal digits with mpmath and rounded once.\n\nWhat moves for callers:\n\n  chi2_sf(inf, k)         NaN -> 0\n  ln_gamma(x < 0.5)       inf or low accuracy -> correct\n  ln_gamma(inf)           NaN -> +inf\n  upper_inc_gamma_reg     a < 0.5 -> NaN, having returned a wrong\n                          number there; a >= 576.5 no longer truncates;\n                          a result outside [0, 1] -> NaN, which starts\n                          at about a = 3.7e15\n  sample_statistics       Some(NaN, NaN) -> None on non-finite input\n  sigma_points            Ok(silently half-read) -> Err(NotSymmetric)\n  SigmaPointsError        gained a variant, so an exhaustive match\n                          downstream fails to compile rather than\n                          falling through\n\nNothing the crate computes for itself changes: every internal ln_gamma\nargument is at or above 1/2, and every chi2_sf call in the engine passes\nk in {1, 2, 6}, so a is at most 3 — below the ceiling that used to bind\nand above the domain that is now refused. Both incomplete-gamma defects\nwere unreachable from any caller. No shipped test moved except the one\nwhose constants were wrong.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01VGMgAEvfuaGGbNEBwenbNo\n\n* Cite the QR module's references in full\n\nThe references section listed five works by author and year and then\npointed at a file outside this repository for the rest. A published\ncrate cannot cite a document its readers do not have, and the pointer\nnamed a private path.\n\nEach work now carries author, title, publisher or journal, volume, year,\npages and a DOI where one exists, together with a line saying which part\nof this module it accounts for: why the normal equations square the\ncondition number, where the weighted least-squares treatment comes from,\nwhat the row-wise update is the measurement form of, and where the\ndamping term as extra rows is from.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01VGMgAEvfuaGGbNEBwenbNo\n\n---------\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-08T05:59:09-07:00",
+          "tree_id": "fbc32925dd1adb4dbc51349da82e0474028efa0c",
+          "url": "https://github.com/Empyrean-Dynamics/nolan/commit/5546b176b51ced599aa8b8dfb37ea90586d782e2"
+        },
+        "date": 1788873669689,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "jet1_6_constant",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_constant",
+            "value": 21,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_constant",
+            "value": 100,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_variable",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_variable",
+            "value": 21,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_variable",
+            "value": 95,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_add",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_add",
+            "value": 39,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_add",
+            "value": 315,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul",
+            "value": 73,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul",
+            "value": 523,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_div",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_div",
+            "value": 91,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_div",
+            "value": 548,
+            "range": "± 22",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul_scalar",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul_scalar",
+            "value": 29,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul_scalar",
+            "value": 199,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sin",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sin",
+            "value": 59,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sin",
+            "value": 355,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_cos",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_cos",
+            "value": 61,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_cos",
+            "value": 348,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sqrt",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sqrt",
+            "value": 50,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sqrt",
+            "value": 336,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_powi_3",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_powi_3",
+            "value": 54,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_powi_3",
+            "value": 336,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_atan2",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_atan2",
+            "value": 113,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_atan2",
+            "value": 791,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_gravity_accel",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_gravity_accel",
+            "value": 337,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_gravity_accel",
+            "value": 2173,
+            "range": "± 15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_add",
+            "value": 13,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_add",
+            "value": 91,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_add",
+            "value": 963,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_mul",
+            "value": 13,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_mul",
+            "value": 275,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_mul",
+            "value": 1404,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_sin",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_sin",
+            "value": 145,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_sin",
+            "value": 1036,
+            "range": "± 55",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_gravity_accel",
+            "value": 60,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_gravity_accel",
+            "value": 837,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_gravity_accel",
+            "value": 6343,
+            "range": "± 44",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_extract_grad",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_extract_grad",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_extract_hess",
+            "value": 50,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_extract_hess",
+            "value": 181,
+            "range": "± 15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_extract_tens",
+            "value": 562,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_extract_tens",
+            "value": 1876,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_gravity_magnitude",
+            "value": 12,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate2_6_gravity_magnitude",
+            "value": 249,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate3_6_gravity_magnitude",
+            "value": 1706,
+            "range": "± 79",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_3_gravity_accel",
+            "value": 45,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_first_gravity",
+            "value": 57,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_second_gravity",
+            "value": 289,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_third_gravity",
+            "value": 2636,
+            "range": "± 77",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_f64",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_f64",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_f64",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_jet1_6",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_jet1_6",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_jet1_6",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_f64",
+            "value": 138,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_f64",
+            "value": 186,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_jet1_6",
+            "value": 982,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_jet1_6",
+            "value": 1419,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_f64",
+            "value": 319,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_f64",
+            "value": 541,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_jet1_9",
+            "value": 3566,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_jet1_9",
+            "value": 5916,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_6_f64",
+            "value": 445,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_9_f64",
+            "value": 1080,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_transpose_2x6",
+            "value": 5,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_2x2x6",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_6x2x6",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_ata_2x6",
+            "value": 20,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_vec_mul_2",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_det_6",
+            "value": 97,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_trace_cube_6",
+            "value": 268,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_frobenius_6x6",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_largest_singular_value_6",
+            "value": 3288,
+            "range": "± 41",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "condition_number_6",
+            "value": 13697,
+            "range": "± 301",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sym_eigenvalues_3",
+            "value": 76,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_symmetric_eigen_6",
+            "value": 2169,
+            "range": "± 27",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nearest_psd_6",
+            "value": 2196,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "tikhonov_with_report_6",
+            "value": 12467,
+            "range": "± 442",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sample_statistics_6_n50",
+            "value": 473,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sigma_points_6",
+            "value": 274,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k3",
+            "value": 133,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k5",
+            "value": 186,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k7",
+            "value": 205,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k15",
+            "value": 284,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linspace_64",
+            "value": 147,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "logspace_64",
+            "value": 443,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linear_clamped_64",
+            "value": 13,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_pi_x64",
+            "value": 405,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_2pi_x64",
+            "value": 384,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_180_x64",
+            "value": 293,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_360_x64",
+            "value": 271,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_bulk_x64",
+            "value": 3310,
+            "range": "± 39",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_near_tail_x64",
+            "value": 17103,
+            "range": "± 50",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_deep_tail_x64",
+            "value": 5263,
+            "range": "± 20",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_sf_near_tail_x64",
+            "value": 16910,
+            "range": "± 31",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_pdf_bulk_x64",
+            "value": 518,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_pdf_tail_x64",
+            "value": 1115,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_difference_straddling_x64",
+            "value": 6422,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_difference_same_side_x64",
+            "value": 28986,
+            "range": "± 55",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_abramowitz_stegun_bulk_x64",
+            "value": 830,
+            "range": "± 30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_abramowitz_stegun_near_tail_x64",
+            "value": 804,
+            "range": "± 16",
             "unit": "ns/iter"
           }
         ]
