@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788873671321,
+  "lastUpdate": 1789326772171,
   "repoUrl": "https://github.com/Empyrean-Dynamics/nolan",
   "entries": {
     "Nolan Benchmarks": [
@@ -18347,6 +18347,714 @@ window.BENCHMARK_DATA = {
             "name": "normal_cdf_abramowitz_stegun_near_tail_x64",
             "value": 804,
             "range": "± 16",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "moeyensj@users.noreply.github.com",
+            "name": "Joachim Moeyens",
+            "username": "moeyensj"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "03e0139d22e07007ff3da4e9cc3c6e6dda702014",
+          "message": "Set the citation release date for 1.15.0 (#39)\n\nCITATION.cff still carried date-released 2026-09-02, the 1.14.0 release\ndate, after the 1.15.0 version bump; CI checks the citation version\nagainst Cargo.toml and the tag, not the date. One line, merged before the\n1.15.0 tag so the citation metadata the release ships is right.\n\n\nClaude-Session: https://claude.ai/code/session_01VGMgAEvfuaGGbNEBwenbNo\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-13T11:50:33-07:00",
+          "tree_id": "e0dc84d2ec623ad96db51df1b0de979fcda872f2",
+          "url": "https://github.com/Empyrean-Dynamics/nolan/commit/03e0139d22e07007ff3da4e9cc3c6e6dda702014"
+        },
+        "date": 1789326770895,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "jet1_6_constant",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_constant",
+            "value": 19,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_constant",
+            "value": 89,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_variable",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_variable",
+            "value": 19,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_variable",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_add",
+            "value": 10,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_add",
+            "value": 35,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_add",
+            "value": 277,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul",
+            "value": 64,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul",
+            "value": 470,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_div",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_div",
+            "value": 81,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_div",
+            "value": 511,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_mul_scalar",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_mul_scalar",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_mul_scalar",
+            "value": 174,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sin",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sin",
+            "value": 53,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sin",
+            "value": 325,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_cos",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_cos",
+            "value": 53,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_cos",
+            "value": 313,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_sqrt",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_sqrt",
+            "value": 43,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_sqrt",
+            "value": 293,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_powi_3",
+            "value": 5,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_powi_3",
+            "value": 45,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_powi_3",
+            "value": 307,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_atan2",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_atan2",
+            "value": 103,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_atan2",
+            "value": 736,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_gravity_accel",
+            "value": 38,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_gravity_accel",
+            "value": 315,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_gravity_accel",
+            "value": 2008,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_add",
+            "value": 12,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_add",
+            "value": 76,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_add",
+            "value": 847,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_mul",
+            "value": 13,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_mul",
+            "value": 247,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_mul",
+            "value": 1254,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_sin",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_sin",
+            "value": 132,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_sin",
+            "value": 911,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_gravity_accel",
+            "value": 56,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_gravity_accel",
+            "value": 785,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_gravity_accel",
+            "value": 5747,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_6_extract_grad",
+            "value": 5,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet1_9_extract_grad",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_6_extract_hess",
+            "value": 35,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_9_extract_hess",
+            "value": 158,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_6_extract_tens",
+            "value": 506,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet3_9_extract_tens",
+            "value": 1683,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_gravity_magnitude",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate2_6_gravity_magnitude",
+            "value": 222,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate3_6_gravity_magnitude",
+            "value": 1633,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate1_6_3_gravity_accel",
+            "value": 42,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_first_gravity",
+            "value": 54,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_second_gravity",
+            "value": 277,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "differentiate_dyn_6_3_third_gravity",
+            "value": 2515,
+            "range": "± 58",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_f64",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_f64",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_f64",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dot3_jet1_6",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cross3_jet1_6",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "norm3_jet1_6",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_f64",
+            "value": 126,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_f64",
+            "value": 174,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_solve_jet1_6",
+            "value": 868,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat6_inv_jet1_6",
+            "value": 1343,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_f64",
+            "value": 314,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_f64",
+            "value": 509,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_solve_jet1_9",
+            "value": 3313,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat9_inv_jet1_9",
+            "value": 5665,
+            "range": "± 31",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_6_f64",
+            "value": 436,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_solve_9_f64",
+            "value": 1041,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_transpose_2x6",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_2x2x6",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_mul_6x2x6",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_ata_2x6",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_vec_mul_2",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_det_6",
+            "value": 93,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_trace_cube_6",
+            "value": 242,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_frobenius_6x6",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_largest_singular_value_6",
+            "value": 3190,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "condition_number_6",
+            "value": 13498,
+            "range": "± 42",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sym_eigenvalues_3",
+            "value": 71,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mat_symmetric_eigen_6",
+            "value": 1958,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nearest_psd_6",
+            "value": 1989,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "tikhonov_with_report_6",
+            "value": 11745,
+            "range": "± 48",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sample_statistics_6_n50",
+            "value": 468,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sigma_points_6",
+            "value": 240,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k3",
+            "value": 140,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k5",
+            "value": 191,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k7",
+            "value": 219,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "split_gaussian_6_k15",
+            "value": 301,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linspace_64",
+            "value": 133,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "logspace_64",
+            "value": 498,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "linear_clamped_64",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_pi_x64",
+            "value": 413,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_2pi_x64",
+            "value": 388,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_180_x64",
+            "value": 245,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wrap_360_x64",
+            "value": 260,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_bulk_x64",
+            "value": 3091,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_near_tail_x64",
+            "value": 17046,
+            "range": "± 71",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_deep_tail_x64",
+            "value": 6479,
+            "range": "± 15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_sf_near_tail_x64",
+            "value": 16760,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_pdf_bulk_x64",
+            "value": 557,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_pdf_tail_x64",
+            "value": 1113,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_difference_straddling_x64",
+            "value": 6481,
+            "range": "± 37",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_difference_same_side_x64",
+            "value": 29439,
+            "range": "± 20",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_abramowitz_stegun_bulk_x64",
+            "value": 841,
+            "range": "± 35",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "normal_cdf_abramowitz_stegun_near_tail_x64",
+            "value": 835,
+            "range": "± 2",
             "unit": "ns/iter"
           }
         ]
