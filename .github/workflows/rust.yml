@@ -1,10 +1,28 @@
 name: Rust CI
 
+# Lint and tests run on every push to a pull request and to main; together
+# they take about two minutes. The benchmarks take about twenty, so they run
+# only where their result is used: on pull requests that are ready for review
+# (not drafts), on pushes to main (which publish the baseline the pull
+# requests are compared against), and on manual dispatch.
+#
+# Open a pull request as a draft and iterate; mark it ready for review to
+# get the benchmark comparison.
+
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+    types: [ opened, synchronize, reopened, ready_for_review ]
+  workflow_dispatch:
+
+# A newer push to a pull request replaces the run still in flight for it.
+# Runs on main and dispatches each get their own group, so none of them is
+# ever cancelled or left pending behind another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,6 +32,7 @@ jobs:
   build-lint:
     name: Build & Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -56,8 +75,8 @@ jobs:
   # ── Test ────────────────────────────────────────────────────────
   test:
     name: Test (${{ matrix.profile }})
-    needs: build-lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -69,10 +88,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # One build cache entry per leg. With the job's single key the debug
+      # leg restored the release leg's artifacts and the other way round.
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           rustflags: ""
+          cache-key: ${{ matrix.profile }}
 
       - name: Unit tests
         run: cargo test --verbose ${{ matrix.test_flags }}
@@ -80,8 +102,12 @@ jobs:
   # ── Benchmark: Criterion with baseline comparison ───────────────
   benchmark:
     name: Benchmark
-    needs: build-lint
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: write
       deployments: write
@@ -108,8 +134,8 @@ jobs:
           tool: 'cargo'
           output-file-path: benchmark-output.txt
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          # On main: push baseline to gh-pages branch
-          auto-push: ${{ github.ref == 'refs/heads/main' }}
+          # On a push to main: publish the baseline to the gh-pages branch
+          auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           # On PRs: post comparison comment
           comment-on-alert: true
           summary-always: true
